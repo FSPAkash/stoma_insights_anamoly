@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: stoma-anomaly-dashboard
+    runtime: python
+    buildCommand: ./build.sh
+    startCommand: cd backend && gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.6"
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      - key: RENDER_EXTERNAL_URL
+        generateValue: false

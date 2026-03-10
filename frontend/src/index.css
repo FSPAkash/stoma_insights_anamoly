@@ -1,0 +1,285 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --green-900: #1B5E20;
+  --green-600: #388E3C;
+  --green-500: #4CAF50;
+  --green-300: #81C784;
+  --green-200: #A8DCA8;
+  --green-100: #CBE6C8;
+  --green-50: #E6F4EA;
+  --white: #FFFFFF;
+  --off-white: #F8FAF8;
+  --gray-50: #F5F7F5;
+  --gray-100: #E8ECE8;
+  --gray-200: #D0D5D0;
+  --gray-300: #B0B8B0;
+  --gray-400: #8A928A;
+  --gray-500: #6B736B;
+  --gray-600: #4A524A;
+  --gray-700: #2D332D;
+  --gray-800: #1A1F1A;
+  --red-500: #EF5350;
+  --red-100: #FFCDD2;
+  --amber-500: #FFA726;
+  --amber-100: #FFE0B2;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: #FFFFFF;
+  color: var(--gray-800);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.5;
+  overflow-x: hidden;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--gray-200);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--gray-300);
+}
+
+input, button, select, textarea {
+  font-family: inherit;
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Aurora / liquid mesh background ── */
+
+.aurora-bg {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 0;
+  background: #FFFFFF;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+@keyframes meshDrift1 {
+  0% { transform: translate(0%, 0%) rotate(0deg) scale(1); }
+  20% { transform: translate(8%, -6%) rotate(15deg) scale(1.05); }
+  40% { transform: translate(-4%, 10%) rotate(-10deg) scale(0.97); }
+  60% { transform: translate(6%, 4%) rotate(20deg) scale(1.03); }
+  80% { transform: translate(-8%, -3%) rotate(-5deg) scale(0.98); }
+  100% { transform: translate(0%, 0%) rotate(0deg) scale(1); }
+}
+
+@keyframes meshDrift2 {
+  0% { transform: translate(0%, 0%) rotate(0deg) scale(1); }
+  25% { transform: translate(-10%, 8%) rotate(-20deg) scale(1.06); }
+  50% { transform: translate(5%, -5%) rotate(10deg) scale(0.95); }
+  75% { transform: translate(7%, 6%) rotate(-15deg) scale(1.04); }
+  100% { transform: translate(0%, 0%) rotate(0deg) scale(1); }
+}
+
+@keyframes meshDrift3 {
+  0% { transform: translate(0%, 0%) rotate(0deg) scale(1); }
+  30% { transform: translate(6%, 9%) rotate(12deg) scale(1.03); }
+  60% { transform: translate(-7%, -4%) rotate(-18deg) scale(0.96); }
+  100% { transform: translate(0%, 0%) rotate(0deg) scale(1); }
+}
+
+@keyframes meshDrift4 {
+  0% { transform: translate(0%, 0%) rotate(0deg) scale(1); }
+  20% { transform: translate(-5%, -8%) rotate(8deg) scale(1.04); }
+  45% { transform: translate(9%, 3%) rotate(-12deg) scale(0.97); }
+  70% { transform: translate(-3%, 7%) rotate(16deg) scale(1.02); }
+  100% { transform: translate(0%, 0%) rotate(0deg) scale(1); }
+}
+
+@keyframes meshDrift5 {
+  0% { transform: translate(0%, 0%) rotate(0deg) scale(1); }
+  35% { transform: translate(7%, -7%) rotate(-14deg) scale(1.05); }
+  65% { transform: translate(-6%, 5%) rotate(10deg) scale(0.98); }
+  100% { transform: translate(0%, 0%) rotate(0deg) scale(1); }
+}
+
+@keyframes meshBreathe1 {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.55; }
+}
+
+@keyframes meshBreathe2 {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 0.45; }
+}
+
+@keyframes meshBreathe3 {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.5; }
+}
+
+.aurora-mesh {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(var(--mesh-blur));
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+/* Large primary blobs */
+.mesh-1 {
+  width: 55vw; height: 55vw;
+  max-width: 700px; max-height: 700px;
+  top: -12%; left: -8%;
+  background: radial-gradient(ellipse at 40% 40%, #CBE6C8 0%, #E6F4EA 40%, transparent 70%);
+  --mesh-blur: 80px;
+  animation: meshDrift1 45s ease-in-out infinite, meshBreathe1 12s ease-in-out infinite;
+}
+
+.mesh-2 {
+  width: 50vw; height: 50vw;
+  max-width: 650px; max-height: 650px;
+  top: -5%; right: -12%;
+  background: radial-gradient(ellipse at 60% 30%, #A8DCA8 0%, #E6F4EA 35%, transparent 70%);
+  --mesh-blur: 90px;
+  animation: meshDrift2 50s ease-in-out infinite, meshBreathe2 14s ease-in-out 2s infinite;
+}
+
+.mesh-3 {
+  width: 45vw; height: 45vw;
+  max-width: 600px; max-height: 600px;
+  top: 30%; left: 15%;
+  background: radial-gradient(ellipse at 50% 50%, #81C784 0%, #CBE6C8 30%, transparent 65%);
+  --mesh-blur: 100px;
+  animation: meshDrift3 55s ease-in-out infinite, meshBreathe3 16s ease-in-out 4s infinite;
+}
+
+.mesh-4 {
+  width: 40vw; height: 40vw;
+  max-width: 550px; max-height: 550px;
+  top: 25%; right: 5%;
+  background: radial-gradient(ellipse at 45% 55%, #E6F4EA 0%, #CBE6C8 35%, transparent 70%);
+  --mesh-blur: 85px;
+  animation: meshDrift4 48s ease-in-out infinite, meshBreathe1 13s ease-in-out 6s infinite;
+}
+
+.mesh-5 {
+  width: 50vw; height: 50vw;
+  max-width: 650px; max-height: 650px;
+  bottom: -8%; left: -5%;
+  background: radial-gradient(ellipse at 55% 60%, #A8DCA8 0%, #E6F4EA 40%, transparent 70%);
+  --mesh-blur: 95px;
+  animation: meshDrift5 52s ease-in-out infinite, meshBreathe2 15s ease-in-out 3s infinite;
+}
+
+.mesh-6 {
+  width: 42vw; height: 42vw;
+  max-width: 560px; max-height: 560px;
+  bottom: -10%; right: -8%;
+  background: radial-gradient(ellipse at 40% 50%, #CBE6C8 0%, #E6F4EA 35%, transparent 65%);
+  --mesh-blur: 90px;
+  animation: meshDrift1 58s ease-in-out infinite, meshBreathe3 14s ease-in-out 8s infinite;
+}
+
+/* Smaller accent wisps */
+.mesh-7 {
+  width: 30vw; height: 30vw;
+  max-width: 400px; max-height: 400px;
+  top: 55%; left: 35%;
+  background: radial-gradient(ellipse at 50% 50%, rgba(76,175,80,0.25) 0%, rgba(230,244,234,0.15) 40%, transparent 70%);
+  --mesh-blur: 70px;
+  animation: meshDrift3 42s ease-in-out infinite, meshBreathe1 11s ease-in-out 5s infinite;
+}
+
+.mesh-8 {
+  width: 25vw; height: 25vw;
+  max-width: 350px; max-height: 350px;
+  top: 10%; left: 40%;
+  background: radial-gradient(ellipse at 50% 50%, rgba(168,220,168,0.2) 0%, rgba(203,230,200,0.1) 45%, transparent 70%);
+  --mesh-blur: 65px;
+  animation: meshDrift5 40s ease-in-out infinite, meshBreathe2 10s ease-in-out 7s infinite;
+}
+
+.mesh-9 {
+  width: 28vw; height: 28vw;
+  max-width: 380px; max-height: 380px;
+  top: 70%; left: 60%;
+  background: radial-gradient(ellipse at 45% 45%, rgba(129,199,132,0.2) 0%, rgba(230,244,234,0.12) 40%, transparent 70%);
+  --mesh-blur: 75px;
+  animation: meshDrift2 46s ease-in-out infinite, meshBreathe3 12s ease-in-out 1s infinite;
+}
+
+.mesh-10 {
+  width: 22vw; height: 22vw;
+  max-width: 300px; max-height: 300px;
+  top: 45%; left: 5%;
+  background: radial-gradient(ellipse at 55% 50%, rgba(203,230,200,0.25) 0%, transparent 65%);
+  --mesh-blur: 60px;
+  animation: meshDrift4 38s ease-in-out infinite, meshBreathe1 9s ease-in-out 3s infinite;
+}
+
+/* ── Tooltip system ── */
+
+.tooltip-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(203, 230, 200, 0.5);
+  border: 1px solid rgba(129, 199, 132, 0.4);
+  cursor: help;
+  font-size: 10px;
+  font-weight: 600;
+  color: #388E3C;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.tooltip-trigger:hover {
+  background: rgba(129, 199, 132, 0.3);
+  border-color: #4CAF50;
+  transform: scale(1.1);
+}
+
+.tooltip-trigger .tooltip-content {
+  display: none;
+}
+
+.tooltip-trigger:hover .tooltip-content {
+  display: none;
+}

@@ -1,0 +1,41 @@
+const theme = {
+  colors: {
+    green900: '#1B5E20',
+    green600: '#388E3C',
+    green500: '#4CAF50',
+    green300: '#81C784',
+    green200: '#A8DCA8',
+    green100: '#CBE6C8',
+    green50: '#E6F4EA',
+    white: '#FFFFFF',
+    offWhite: '#F8FAF8',
+    gray50: '#F5F7F5',
+    gray100: '#E8ECE8',
+    gray200: '#D0D5D0',
+    gray300: '#B0B8B0',
+    gray400: '#8A928A',
+    gray500: '#6B736B',
+    gray600: '#4A524A',
+    gray700: '#2D332D',
+    gray800: '#1A1F1A',
+    red500: '#EF5350',
+    red100: '#FFCDD2',
+    amber500: '#FFA726',
+    amber100: '#FFE0B2',
+  },
+  severity: {
+    HIGH: { bg: '#FFCDD2', text: '#C62828', border: '#EF9A9A' },
+    MEDIUM: { bg: '#FFE0B2', text: '#E65100', border: '#FFCC80' },
+    NORMAL: { bg: '#E6F4EA', text: '#1B5E20', border: '#A8DCA8' },
+  },
+  classColors: {
+    MECH: '#1B5E20',
+    ELEC: '#388E3C',
+    THERM: '#FFA726',
+    PROCESS: '#7B1FA2',
+    INSTRUMENT: '#1565C0',
+    NORMAL: '#81C784',
+  },
+};
+
+export default theme;

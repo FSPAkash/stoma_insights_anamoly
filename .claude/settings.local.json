@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://localhost:5000/api/scores/timeseries?downsample=100)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(''timestamp_col:'', d.get\\(''timestamp_col''\\)\\); print\\(''first record keys:'', list\\(d[''timeseries''][0].keys\\(\\)\\) if d[''timeseries''] else ''empty''\\)\")",
+      "Bash(curl -s http://localhost:5000/api/dashboard/summary)",
+      "Bash(curl -s \"http://localhost:3000\")",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(''count:'', len\\(d[''timeseries'']\\), ''ts_col:'', d[''timestamp_col'']\\)\")",
+      "Bash(curl -s \"http://localhost:3000/static/js/bundle.js\")",
+      "Bash(curl -s \"http://localhost:3000/api/scores/timeseries?downsample=5\")",
+      "Bash(for ep in \"dashboard/summary\" \"alerts\" \"scores/timeseries?downsample=5\" \"scores?limit=100\" \"normal_periods\")",
+      "Bash(do echo \"=== $ep ===\")",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\" \"http://localhost:5000/api/$ep\")",
+      "Bash(done)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(type\\(d\\)\\); print\\(list\\(d.keys\\(\\)\\)\\); print\\(''ts count:'', len\\(d.get\\(''timeseries'',[]\\)\\), ''ts_col:'', d.get\\(''timestamp_col''\\)\\)\")",
+      "Bash(curl -s -I \"http://localhost:5000/api/scores/timeseries?downsample=5\")",
+      "Bash(python -c \"import json,sys; json.load\\(sys.stdin\\); print\\(''Valid JSON''\\)\")",
+      "Bash(curl -s \"http://localhost:5000/api/scores/timeseries?downsample=2000\")",
+      "Bash(python -c \":*)",
+      "Bash(python -c \"import flask; print\\(flask.__version__\\)\")",
+      "Bash(pip list)",
+      "Bash(pip install openpyxl==3.1.2)",
+      "Bash(python pipeline.py)",
+      "Bash(echo \"EXIT CODE: $?\")",
+      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(curl -s -X POST http://localhost:5000/api/run_pipeline)",
+      "Bash(curl -s http://localhost:5000/api/pipeline_status)",
+      "Bash(tasklist)"
+    ]
+  }
+}
