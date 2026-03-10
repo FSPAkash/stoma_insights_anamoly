@@ -175,7 +175,7 @@ const styles = {
 
 const INITIAL_SHOW = 3;
 
-function AlertEpisodeCards({ alerts, onSelectAlert }) {
+function AlertEpisodeCards({ alerts, onSelectAlert, selectedDay }) {
   const [severityFilter, setSeverityFilter] = useState('ALL');
   const [classFilter, setClassFilter] = useState('ALL');
   const [thresholdFilter, setThresholdFilter] = useState('ALL');
@@ -185,8 +185,16 @@ function AlertEpisodeCards({ alerts, onSelectAlert }) {
 
   const nonNormalAlerts = useMemo(() => {
     if (!alerts || !alerts.length) return [];
-    return alerts.filter((a) => a.class !== 'NORMAL');
-  }, [alerts]);
+    let filtered = alerts.filter((a) => a.class !== 'NORMAL');
+    if (selectedDay) {
+      filtered = filtered.filter((a) => {
+        const startDate = a.start_ts ? String(a.start_ts).substring(0, 10) : '';
+        const endDate = a.end_ts ? String(a.end_ts).substring(0, 10) : '';
+        return startDate === selectedDay || endDate === selectedDay;
+      });
+    }
+    return filtered;
+  }, [alerts, selectedDay]);
 
   const availableClasses = useMemo(() => {
     const classes = new Set();

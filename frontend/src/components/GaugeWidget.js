@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import InfoTooltip from './InfoTooltip';
 
-function GaugeWidget({ value, max = 1, label, size = 120, color = '#4CAF50', sublabel, tooltip, hoverDetail }) {
+function GaugeWidget({ value, max = 1, label, size = 120, color = '#4CAF50', sublabel, tooltip, hoverDetail, latestDate }) {
   const [hovered, setHovered] = useState(false);
   const normalized = Math.min(Math.max((value || 0) / max, 0), 1);
   const angle = normalized * 240 - 120;
@@ -46,12 +46,46 @@ function GaugeWidget({ value, max = 1, label, size = 120, color = '#4CAF50', sub
     );
   }
 
+  const formatLatestDate = (dateStr) => {
+    if (!dateStr) return null;
+    try {
+      const d = new Date(dateStr + 'T00:00:00');
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    } catch {
+      return dateStr;
+    }
+  };
+
+  const formattedDate = formatLatestDate(latestDate);
+
   return (
     <div
       style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', position: 'relative' }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
+      {formattedDate && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '-6px',
+            right: '-10px',
+            background: 'rgba(27,94,32,0.07)',
+            border: '1px solid rgba(27,94,32,0.16)',
+            borderRadius: '20px',
+            padding: '2px 9px',
+            fontSize: '9px',
+            fontWeight: 600,
+            color: '#2E7D32',
+            letterSpacing: '0.03em',
+            whiteSpace: 'nowrap',
+            zIndex: 10,
+            lineHeight: '15px',
+          }}
+        >
+          Latest - {formattedDate}
+        </div>
+      )}
       <svg width={size} height={size * 0.75} viewBox={`0 0 ${size} ${size * 0.85}`}>
         <path d={arcPath(-120, 120)} fill="none" stroke="#E8ECE8" strokeWidth="6" strokeLinecap="round" />
         <path

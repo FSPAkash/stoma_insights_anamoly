@@ -18,6 +18,8 @@ import {
 import InfoTooltip from './InfoTooltip';
 import FeedbackWidget from './FeedbackWidget';
 import PipelineAnimation from './PipelineAnimation';
+import TimeFilter from './TimeFilter';
+import useTimeFilter from '../hooks/useTimeFilter';
 
 const AuroraBg = () => (
   <div className="aurora-bg">
@@ -98,6 +100,54 @@ const styles = {
     borderRadius: '50%',
     animation: 'spin 1s linear infinite',
   },
+  timeFilterStandalone: {
+    position: 'relative',
+    background: 'rgba(255,255,255,0.55)',
+    backdropFilter: 'blur(20px)',
+    WebkitBackdropFilter: 'blur(20px)',
+    border: '2px solid rgba(27,94,32,0.25)',
+    borderRadius: '16px',
+    padding: '20px 24px 16px',
+    marginTop: '32px',
+    marginBottom: '8px',
+    boxShadow: '0 4px 24px rgba(27,94,32,0.08), 0 1px 4px rgba(0,0,0,0.04)',
+  },
+  timeFilterLabel: {
+    fontSize: '11px',
+    fontWeight: 700,
+    color: '#1B5E20',
+    textTransform: 'uppercase',
+    letterSpacing: '0.1em',
+    marginBottom: '12px',
+  },
+  timeFilterHint: {
+    fontSize: '11.5px',
+    color: '#6B736B',
+    marginTop: '10px',
+    lineHeight: '1.5',
+  },
+  filteredDivider: {
+    width: '100%',
+    height: '2px',
+    background: 'linear-gradient(90deg, transparent 0%, rgba(27,94,32,0.18) 20%, rgba(27,94,32,0.18) 80%, transparent 100%)',
+    margin: '0 0 4px 0',
+  },
+  filteredSectionWrap: {
+    position: 'relative',
+    borderLeft: '3px solid rgba(27,94,32,0.13)',
+    paddingLeft: '20px',
+    marginLeft: '4px',
+    marginTop: '0',
+  },
+  filteredSectionLabel: {
+    fontSize: '10.5px',
+    fontWeight: 600,
+    color: '#8A928A',
+    textTransform: 'uppercase',
+    letterSpacing: '0.09em',
+    marginBottom: '16px',
+    marginTop: '8px',
+  },
 };
 
 function Dashboard({ user, onLogout }) {
@@ -110,7 +160,9 @@ function Dashboard({ user, onLogout }) {
   const [selectedAlert, setSelectedAlert] = useState(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(null);
-  const [pipelineStatus, setPipelineStatus] = useState(null); // null | 'running' | 'finished'
+  const [pipelineStatus, setPipelineStatus] = useState(null);
+
+  const timeFilter = useTimeFilter(timeseries, timestampCol);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -151,13 +203,11 @@ function Dashboard({ user, onLogout }) {
     }
   }, []);
 
-  // DEMO: Fake a 5-second data update instead of running the real pipeline
   const handleUpdateData = useCallback(() => {
     setPipelineStatus('running');
     setTimeout(() => {
       setPipelineStatus('finished');
       setLastUpdated(new Date());
-      // Auto-dismiss after showing success briefly
       setTimeout(() => setPipelineStatus(null), 2000);
     }, 5000);
   }, []);
@@ -176,7 +226,6 @@ function Dashboard({ user, onLogout }) {
         <div style={styles.content}>
           <div style={styles.refreshBar}>
             <div>
-
               {summary?.data_range?.start && (
                 <div style={{ fontSize: '13px', color: '#6B736B' }}>
                   Data range: {summary.data_range.start} to {summary.data_range.end}
@@ -206,12 +255,43 @@ function Dashboard({ user, onLogout }) {
           ) : (
             <>
               <SummaryCards summary={summary} stats={stats} />
-              <SubsystemGauges stats={stats} />
-              <NormalBehaviorPanel normalData={normalData} />
 
-              <RiskTimeline timeseries={timeseries} timestampCol={timestampCol} />
-              <ScoresOverview stats={stats} />
-              <AlertEpisodeCards alerts={alerts} onSelectAlert={setSelectedAlert} />
+              <div style={styles.timeFilterStandalone}>
+                <div style={styles.timeFilterLabel}>
+                  Time Filter -- Select Day and Time Range
+                </div>
+                <TimeFilter
+                  availableDays={timeFilter.availableDays}
+                  selectedDay={timeFilter.selectedDay}
+                  isLatestMode={timeFilter.isLatestMode}
+                  lastNHours={timeFilter.lastNHours}
+                  startTime={timeFilter.startTime}
+                  endTime={timeFilter.endTime}
+                  onSelectDay={timeFilter.handleDayChange}
+                  onLatestClick={timeFilter.handleLatestClick}
+                  onLastNHoursChange={timeFilter.setLastNHours}
+                  onStartTimeChange={timeFilter.setStartTime}
+                  onEndTimeChange={timeFilter.setEndTime}
+                  onReset={timeFilter.handleReset}
+                />
+                <div style={styles.timeFilterHint}>
+                  All panels below are filtered by the day and time window selected here.
+                </div>
+              </div>
+
+              <div style={styles.filteredDivider} />
+
+              <div style={styles.filteredSectionWrap}>
+                <div style={styles.filteredSectionLabel}>
+                  Filtered results for: {timeFilter.filterLabel || 'all data'}
+                </div>
+
+                <SubsystemGauges stats={timeFilter.filteredStats} filterLabel={timeFilter.filterLabel} />
+                <NormalBehaviorPanel normalData={timeFilter.filteredNormalData} filterLabel={timeFilter.filterLabel} />
+                <RiskTimeline timeseries={timeFilter.filteredTimeseries} timestampCol={timestampCol} filterLabel={timeFilter.filterLabel} />
+                <ScoresOverview stats={timeFilter.filteredStats} filterLabel={timeFilter.filterLabel} />
+                <AlertEpisodeCards alerts={alerts} onSelectAlert={setSelectedAlert} selectedDay={timeFilter.selectedDay} filterLabel={timeFilter.filterLabel} />
+              </div>
             </>
           )}
         </div>

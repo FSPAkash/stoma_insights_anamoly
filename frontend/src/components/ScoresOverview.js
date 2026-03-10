@@ -51,7 +51,21 @@ const styles = {
   },
 };
 
-function ScoresOverview({ stats }) {
+const filterBadgeStyle = {
+  fontSize: '10px',
+  fontWeight: 500,
+  color: '#1B5E20',
+  background: 'rgba(129,199,132,0.15)',
+  border: '1px solid rgba(129,199,132,0.3)',
+  borderRadius: '6px',
+  padding: '3px 10px',
+  marginLeft: 'auto',
+  whiteSpace: 'nowrap',
+  letterSpacing: '0.02em',
+  textTransform: 'none',
+};
+
+function ScoresOverview({ stats, filterLabel }) {
   if (!stats) return null;
 
   const metrics = [
@@ -69,6 +83,7 @@ function ScoresOverview({ stats }) {
       <div style={styles.heading}>
         Score Statistics
         <InfoTooltip text="Aggregate statistics for all scores across the full time range. Engine A uses rolling baseline (120-min window) and MAD (240-min window) for drift detection. Engine B uses FFT spectral ratio within [5,60]-minute periods. PCA trains on running data with 95% explained variance threshold." />
+        {filterLabel && <span style={filterBadgeStyle}>{filterLabel}</span>}
       </div>
       <table style={styles.table}>
         <thead>

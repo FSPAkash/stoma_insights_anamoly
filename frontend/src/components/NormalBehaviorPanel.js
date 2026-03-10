@@ -59,7 +59,21 @@ const styles = {
   },
 };
 
-function NormalBehaviorPanel({ normalData }) {
+const filterBadgeStyle = {
+  fontSize: '10px',
+  fontWeight: 500,
+  color: '#1B5E20',
+  background: 'rgba(129,199,132,0.15)',
+  border: '1px solid rgba(129,199,132,0.3)',
+  borderRadius: '6px',
+  padding: '3px 10px',
+  marginLeft: 'auto',
+  whiteSpace: 'nowrap',
+  letterSpacing: '0.02em',
+  textTransform: 'none',
+};
+
+function NormalBehaviorPanel({ normalData, filterLabel }) {
   if (!normalData) return null;
 
   const normalPct = normalData.normal_stats?.normal_pct ?? 0;
@@ -67,8 +81,9 @@ function NormalBehaviorPanel({ normalData }) {
   return (
     <GlassCard delay={0.4} style={{ marginTop: '16px' }} intensity="strong">
       <div style={styles.heading}>
-        Normal Sensor Behavior 
+        Normal Sensor Behavior
         <InfoTooltip text="NORMAL classification is assigned when the fused subsystem_score falls below the medium threshold (0.55). These timestamps represent healthy sensor behavior with no detected drift, periodicity anomalies, physics violations, or multivariate reconstruction errors. Normal periods are excluded from alert episodes." />
+        {filterLabel && <span style={filterBadgeStyle}>{filterLabel}</span>}
       </div>
       <div style={styles.row}>
         <div style={styles.stat}>

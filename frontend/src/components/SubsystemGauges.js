@@ -11,7 +11,21 @@ const subsystemTooltips = {
   subsystem_score: 'Fused subsystem score: weighted average of mech (0.35), elec (0.35), therm (0.15), and physics (0.15) scores.',
 };
 
-function SubsystemGauges({ stats }) {
+const filterBadgeStyle = {
+  fontSize: '10px',
+  fontWeight: 500,
+  color: '#1B5E20',
+  background: 'rgba(129,199,132,0.15)',
+  border: '1px solid rgba(129,199,132,0.3)',
+  borderRadius: '6px',
+  padding: '3px 10px',
+  marginLeft: 'auto',
+  whiteSpace: 'nowrap',
+  letterSpacing: '0.02em',
+  textTransform: 'none',
+};
+
+function SubsystemGauges({ stats, filterLabel }) {
   if (!stats) return null;
 
   const subsystems = [
@@ -33,6 +47,7 @@ function SubsystemGauges({ stats }) {
       <div style={{ fontSize: '12px', fontWeight: 500, color: '#6B736B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '16px', display: 'flex', alignItems: 'center' }}>
         Subsystem Scores
         <InfoTooltip text="Each subsystem score is the top-3 mean of per-sensor anomaly scores from Engine A (drift detection using rolling baseline + MAD) and Engine B (periodicity via FFT spectral ratio), folded with PCA reconstruction error. Fusion weights: mech 0.35, elec 0.35, therm 0.15, physics 0.15." />
+        {filterLabel && <span style={filterBadgeStyle}>{filterLabel}</span>}
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-around', flexWrap: 'wrap', gap: '20px' }}>
         {subsystems.map((sub) => {

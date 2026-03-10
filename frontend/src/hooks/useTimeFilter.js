@@ -1,0 +1,154 @@
+import { useState, useMemo, useEffect } from 'react';
+
+export default function useTimeFilter(timeseries, timestampCol) {
+  const [selectedDay, setSelectedDay] = useState(null);
+  const [isLatestMode, setIsLatestMode] = useState(true);
+  const [lastNHours, setLastNHours] = useState(24);
+  const [startTime, setStartTime] = useState('00:00');
+  const [endTime, setEndTime] = useState('23:59');
+
+  // Extract unique days
+  const availableDays = useMemo(() => {
+    if (!timeseries || !timeseries.length) return [];
+    const daySet = new Set();
+    timeseries.forEach((row) => {
+      const ts = row[timestampCol];
+      if (ts) daySet.add(String(ts).substring(0, 10));
+    });
+    return Array.from(daySet).sort();
+  }, [timeseries, timestampCol]);
+
+  const latestDay = availableDays.length ? availableDays[availableDays.length - 1] : null;
+
+  // Default to most recent day
+  useEffect(() => {
+    if (availableDays.length && !availableDays.includes(selectedDay)) {
+      setSelectedDay(availableDays[availableDays.length - 1]);
+      setIsLatestMode(true);
+    }
+  }, [availableDays, selectedDay]);
+
+  const handleLatestClick = () => {
+    setSelectedDay(latestDay);
+    setIsLatestMode(true);
+    setLastNHours(24);
+  };
+
+  const handleDayChange = (day) => {
+    setSelectedDay(day);
+    setIsLatestMode(false);
+    setStartTime('00:00');
+    setEndTime('23:59');
+  };
+
+  const handleReset = () => {
+    setStartTime('00:00');
+    setEndTime('23:59');
+  };
+
+  // Filter timeseries by current day + time selection
+  const filteredTimeseries = useMemo(() => {
+    if (!timeseries || !timeseries.length || !selectedDay) return [];
+    // Filter by day
+    const dayData = timeseries.filter((row) => {
+      const ts = row[timestampCol];
+      return ts && String(ts).substring(0, 10) === selectedDay;
+    });
+    // Apply time filter
+    if (isLatestMode && lastNHours < 24 && dayData.length > 0) {
+      const lastTs = dayData[dayData.length - 1][timestampCol];
+      if (lastTs) {
+        const end = new Date(String(lastTs));
+        const start = new Date(end.getTime() - lastNHours * 60 * 60 * 1000);
+        return dayData.filter((row) => new Date(String(row[timestampCol])) >= start);
+      }
+    } else if (!isLatestMode) {
+      return dayData.filter((row) => {
+        const hhmm = String(row[timestampCol]).substring(11, 16);
+        return hhmm >= startTime && hhmm <= endTime;
+      });
+    }
+    return dayData;
+  }, [timeseries, timestampCol, selectedDay, isLatestMode, lastNHours, startTime, endTime]);
+
+  // Compute stats from filtered timeseries
+  const filteredStats = useMemo(() => {
+    if (!filteredTimeseries.length) return null;
+    const scoreKeys = ['risk_score', 'mech_score', 'elec_score', 'therm_score', 'physics_score', 'subsystem_score', 'sqs_mean'];
+    const stats = {};
+    for (const key of scoreKeys) {
+      const vals = filteredTimeseries
+        .map((r) => r[key])
+        .filter((v) => v !== null && v !== undefined && !isNaN(v))
+        .map(Number);
+      if (!vals.length) continue;
+      const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+      const max = Math.max(...vals);
+      const min = Math.min(...vals);
+      const variance = vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length;
+      stats[key] = {
+        mean,
+        max,
+        min,
+        std: Math.sqrt(variance),
+      };
+    }
+    return Object.keys(stats).length ? stats : null;
+  }, [filteredTimeseries]);
+
+  // Compute normal stats from filtered timeseries
+  const filteredNormalData = useMemo(() => {
+    if (!filteredTimeseries.length) return null;
+    const total = filteredTimeseries.length;
+    const normalRows = filteredTimeseries.filter((r) => r.class === 'NORMAL');
+    const normalCount = normalRows.length;
+    const normalPct = total > 0 ? Math.round((normalCount / total) * 100) : 0;
+    const riskVals = normalRows.map((r) => Number(r.risk_score)).filter((v) => !isNaN(v));
+    const sqsVals = normalRows.map((r) => Number(r.sqs_mean)).filter((v) => !isNaN(v));
+    const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+    return {
+      normal_stats: {
+        normal_pct: normalPct,
+        normal_count: normalCount,
+        avg_risk_during_normal: avg(riskVals),
+        avg_sqs_during_normal: avg(sqsVals),
+      },
+    };
+  }, [filteredTimeseries]);
+
+  // Human-readable label for the active filter
+  const filterLabel = useMemo(() => {
+    if (!selectedDay) return '';
+    const d = new Date(selectedDay + 'T00:00:00');
+    const dayStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    if (isLatestMode) {
+      return lastNHours >= 24 ? `${dayStr} -- Full Day` : `${dayStr} -- Last ${lastNHours}h`;
+    }
+    const timeRange = (startTime === '00:00' && endTime === '23:59')
+      ? 'Full Day'
+      : `${startTime} to ${endTime}`;
+    return `${dayStr} -- ${timeRange}`;
+  }, [selectedDay, isLatestMode, lastNHours, startTime, endTime]);
+
+  return {
+    // Filter state
+    selectedDay,
+    isLatestMode,
+    lastNHours,
+    startTime,
+    endTime,
+    availableDays,
+    filterLabel,
+    // Handlers
+    handleLatestClick,
+    handleDayChange,
+    setLastNHours,
+    setStartTime: (v) => setStartTime(v),
+    setEndTime: (v) => setEndTime(v),
+    handleReset,
+    // Filtered data
+    filteredTimeseries,
+    filteredStats,
+    filteredNormalData,
+  };
+}
