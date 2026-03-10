@@ -12,8 +12,9 @@ backend/__pycache__/
 *.pyc
 *.pyo
 
-# Data files (too large for git, keep on server)
-backend/data/
+# Large binary data (parquet, xlsx) - CSVs are kept
+backend/data/*.parquet
+backend/data/*.xlsx
 backend/*.parquet
 
 # Pipeline artifacts
