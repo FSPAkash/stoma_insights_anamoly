@@ -298,7 +298,7 @@ function SummaryCards({ summary, stats, systems }) {
 
         <GlassCard delay={0.25} intensity="strong">
           <div style={styles.statLabel}>
-            Classification
+            Alert Classification
             <InfoTooltip text="Alert classification based on dominant subsystem. SYS_* is assigned when that subsystem's score dominates the episode. PROCESS is assigned when multiple subsystems contribute significantly. INSTRUMENT is assigned when the physics/identity score dominates with low subsystem scores. NORMAL timestamps are never classified as alerts." right />
           </div>
           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '4px' }}>
@@ -312,7 +312,7 @@ function SummaryCards({ summary, stats, systems }) {
                 }}
                 whileHover={{ scale: 1.05 }}
               >
-                {cls} {count}
+                {cls} 
               </motion.span>
             ))}
           </div>
