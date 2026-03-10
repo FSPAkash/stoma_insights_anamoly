@@ -61,6 +61,7 @@ USERS = {
     "Tejas": "t1234",
     "Naina": "n1234",
     "Gaurav": "g1234",
+    "Sagar": "s1234",
 }
 
 TIMESTAMP_CANDIDATES = [
@@ -203,6 +204,10 @@ def get_alerts():
     if df.empty:
         return jsonify({"alerts": [], "summary": {}})
 
+    # Exclude NORMAL -- not a valid alert classification
+    if "class" in df.columns:
+        df = df[df["class"] != "NORMAL"]
+
     df = sanitize_df(df)
 
     high_count = len(df[df["severity"] == "HIGH"]) if "severity" in df.columns else 0
@@ -272,8 +277,16 @@ def get_scores():
         df = df.iloc[offset: offset + limit]
 
     stats = {}
-    for col in ["risk_score", "mech_score", "elec_score", "therm_score",
-                 "physics_score", "subsystem_score", "sqs_mean"]:
+    score_cols = ["risk_score", "physics_score", "subsystem_score", "sqs_mean"]
+    # Add dynamic score_SYS_* columns
+    for col in df.columns:
+        if col.startswith("score_SYS_") or col.startswith("risk_SYS_"):
+            score_cols.append(col)
+    # Legacy
+    for col in ["mech_score", "elec_score", "therm_score"]:
+        if col in df.columns and col not in score_cols:
+            score_cols.append(col)
+    for col in score_cols:
         if col in df.columns:
             series = pd.to_numeric(df[col], errors="coerce")
             stats[col] = {
@@ -321,10 +334,20 @@ def get_scores_timeseries():
     df_sampled = df.iloc[::max(1, downsample)]
 
     cols_to_include = [ts_col]
-    for col in ["risk_score", "mech_score", "elec_score", "therm_score",
-                 "physics_score", "subsystem_score", "sqs_mean", "mode", "class",
-                 "risk_mech", "risk_elec", "risk_therm", "risk_instrument"]:
+    # Include known fixed columns
+    for col in ["risk_score", "physics_score", "subsystem_score", "sqs_mean", "mode", "class",
+                 "risk_INSTRUMENT"]:
         if col in df_sampled.columns and col != ts_col:
+            cols_to_include.append(col)
+    # Include dynamic score_SYS_* and risk_SYS_* columns
+    for col in df_sampled.columns:
+        if (col.startswith("score_SYS_") or col.startswith("risk_SYS_") or
+            col.startswith("score_") or col.startswith("risk_")) and col not in cols_to_include:
+            cols_to_include.append(col)
+    # Legacy support for old column names
+    for col in ["mech_score", "elec_score", "therm_score",
+                 "risk_mech", "risk_elec", "risk_therm", "risk_instrument"]:
+        if col in df_sampled.columns and col not in cols_to_include:
             cols_to_include.append(col)
 
     existing_cols = [c for c in cols_to_include if c in df_sampled.columns]
@@ -442,6 +465,124 @@ def get_risk_decomposition_for_episode():
     return jsonify({"decomposition": decomposition, "flow_data": flow_data})
 
 
+@app.route("/api/systems", methods=["GET"])
+def get_systems():
+    """Return discovered systems with their sensors from dynamic_catalog.csv."""
+    catalog_df = load_csv("dynamic_catalog.csv")
+    weights_df = load_csv("dynamic_weights.csv")
+    summary_df = load_csv("system_summary.csv")
+
+    if catalog_df.empty:
+        return jsonify({"systems": [], "isolated": []})
+
+    systems = []
+    isolated_sensors = []
+
+    grouped = catalog_df.groupby("system")["sensor"].apply(list).to_dict()
+
+    # Build weight lookup
+    fusion_weights = {}
+    risk_weights = {}
+    if not weights_df.empty:
+        for _, row in weights_df.iterrows():
+            if row.get("type") == "fusion":
+                fusion_weights[row["key"]] = row["weight"]
+            elif row.get("type") == "risk":
+                risk_weights[row["key"]] = row["weight"]
+
+    # Build summary lookup
+    summary_lookup = {}
+    if not summary_df.empty and "System_ID" in summary_df.columns:
+        for _, row in summary_df.iterrows():
+            summary_lookup[row["System_ID"]] = sanitize_df(pd.DataFrame([row])).to_dict(orient="records")[0]
+
+    for sys_label, sensors in sorted(grouped.items()):
+        if sys_label == "ISOLATED":
+            isolated_sensors = sensors
+            continue
+        sys_info = {
+            "system_id": sys_label,
+            "sensors": sensors,
+            "sensor_count": len(sensors),
+            "fusion_weight": fusion_weights.get(sys_label),
+            "risk_weight": risk_weights.get(sys_label),
+        }
+        if sys_label in summary_lookup:
+            sys_info["r2_adj_mean"] = summary_lookup[sys_label].get("R2_Adj_Mean")
+            sys_info["quality"] = summary_lookup[sys_label].get("Quality")
+        systems.append(sys_info)
+
+    return jsonify({"systems": systems, "isolated": isolated_sensors})
+
+
+@app.route("/api/systems/<system_id>/sensors", methods=["GET"])
+def get_system_sensor_values(system_id):
+    """Return raw sensor time series for a system, plus downtime bands and alerts."""
+    downsample = request.args.get("downsample", default=5, type=int)
+
+    # Load sensor values
+    fname = f"sensor_values_{system_id}.csv"
+    sensor_df, ts_col = load_csv_with_ts(fname)
+    if sensor_df.empty:
+        return jsonify({"timeseries": [], "downtime_bands": [], "alert_bands": [], "sensors": []})
+
+    # Downsample
+    sensor_df = sensor_df.iloc[::max(1, downsample)]
+    sensor_df = sanitize_df(sensor_df)
+
+    if ts_col and ts_col in sensor_df.columns:
+        sensor_df[ts_col] = sensor_df[ts_col].astype(str)
+    sensor_cols = [c for c in sensor_df.columns if c != ts_col]
+
+    timeseries = sensor_df.to_dict(orient="records")
+
+    # Downtime bands from scores.csv
+    scores_df, scores_ts = load_csv_with_ts("scores.csv")
+    downtime_bands = []
+    if not scores_df.empty and "mode" in scores_df.columns and scores_ts:
+        dt_mask = scores_df["mode"] == "DOWNTIME"
+        if dt_mask.any():
+            dt_indices = dt_mask[dt_mask].index.tolist()
+            bands = []
+            start = dt_indices[0]
+            prev = start
+            for idx in dt_indices[1:]:
+                if idx - prev > 1:
+                    bands.append((start, prev))
+                    start = idx
+                prev = idx
+            bands.append((start, prev))
+            for s, e in bands:
+                downtime_bands.append({
+                    "start": str(scores_df.iloc[s][scores_ts]),
+                    "end": str(scores_df.iloc[e][scores_ts]),
+                })
+
+    # Alert bands filtered to this system
+    alerts_df = load_csv("alerts.csv")
+    alert_bands = []
+    if not alerts_df.empty and "class" in alerts_df.columns:
+        sys_alerts = alerts_df[
+            (alerts_df["class"] == system_id) |
+            (alerts_df["class"] == "PROCESS")
+        ]
+        for _, row in sys_alerts.iterrows():
+            alert_bands.append({
+                "start": str(row.get("start_ts", "")),
+                "end": str(row.get("end_ts", "")),
+                "severity": row.get("severity", "MEDIUM"),
+                "class": row.get("class", ""),
+            })
+
+    return jsonify({
+        "timeseries": timeseries,
+        "timestamp_col": ts_col,
+        "sensors": sensor_cols,
+        "downtime_bands": downtime_bands,
+        "alert_bands": alert_bands,
+    })
+
+
 @app.route("/api/sensor_config", methods=["GET"])
 def get_sensor_config():
     df = load_csv("sensor_config.csv")
@@ -511,6 +652,9 @@ def get_dashboard_summary():
     }
 
     if not alerts_df.empty:
+        # Exclude NORMAL from alert counts -- NORMAL is never a valid alert classification
+        if "class" in alerts_df.columns:
+            alerts_df = alerts_df[alerts_df["class"] != "NORMAL"]
         summary["total_alerts"] = len(alerts_df)
         if "severity" in alerts_df.columns:
             summary["high_alerts"] = int((alerts_df["severity"] == "HIGH").sum())
@@ -541,6 +685,18 @@ def get_dashboard_summary():
 
     if not config_df.empty:
         summary["total_sensors"] = len(config_df)
+
+    # Include dynamic system info
+    catalog_df = load_csv("dynamic_catalog.csv")
+    if not catalog_df.empty:
+        grouped = catalog_df.groupby("system")["sensor"].apply(list).to_dict()
+        systems_info = []
+        for sys_label, sensors in sorted(grouped.items()):
+            if sys_label == "ISOLATED":
+                continue
+            systems_info.append({"system_id": sys_label, "sensors": sensors, "sensor_count": len(sensors)})
+        summary["systems"] = systems_info
+        summary["total_sensors"] = len(catalog_df)
 
     return jsonify(summary)
 

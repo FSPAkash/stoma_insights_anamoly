@@ -65,25 +65,36 @@ const filterBadgeStyle = {
   textTransform: 'none',
 };
 
-function ScoresOverview({ stats, filterLabel }) {
+function ScoresOverview({ stats, filterLabel, onFilterClick }) {
   if (!stats) return null;
 
-  const metrics = [
-    { key: 'risk_score', label: 'Risk Score' },
-    { key: 'mech_score', label: 'Mechanical' },
-    { key: 'elec_score', label: 'Electrical' },
-    { key: 'therm_score', label: 'Thermal' },
-    { key: 'physics_score', label: 'Physics' },
-    { key: 'subsystem_score', label: 'Fused Subsystem' },
-    { key: 'sqs_mean', label: 'SQS Mean' },
-  ];
+  // Build metrics dynamically
+  const metrics = [{ key: 'risk_score', label: 'Risk Score' }];
+
+  // Add dynamic score_SYS_* keys
+  const sysKeys = Object.keys(stats).filter((k) => k.startsWith('score_SYS_')).sort();
+  if (sysKeys.length > 0) {
+    sysKeys.forEach((k) => {
+      const sysId = k.replace('score_', '');
+      metrics.push({ key: k, label: sysId.replace('_', ' ') });
+    });
+  } else {
+    // Legacy fallback
+    if (stats.mech_score) metrics.push({ key: 'mech_score', label: 'Mechanical' });
+    if (stats.elec_score) metrics.push({ key: 'elec_score', label: 'Electrical' });
+    if (stats.therm_score) metrics.push({ key: 'therm_score', label: 'Thermal' });
+  }
+
+  metrics.push({ key: 'physics_score', label: 'Physics' });
+  metrics.push({ key: 'subsystem_score', label: 'Fused Subsystem' });
+  metrics.push({ key: 'sqs_mean', label: 'SQS Mean' });
 
   return (
     <GlassCard delay={0.5} style={{ marginTop: '16px' }} intensity="strong">
       <div style={styles.heading}>
         Score Statistics
         <InfoTooltip text="Aggregate statistics for all scores across the full time range. Engine A uses rolling baseline (120-min window) and MAD (240-min window) for drift detection. Engine B uses FFT spectral ratio within [5,60]-minute periods. PCA trains on running data with 95% explained variance threshold." />
-        {filterLabel && <span style={filterBadgeStyle}>{filterLabel}</span>}
+        {filterLabel && <span style={{ ...filterBadgeStyle, cursor: 'pointer' }} onClick={onFilterClick}>{filterLabel}</span>}
       </div>
       <table style={styles.table}>
         <thead>

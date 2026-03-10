@@ -35,6 +35,10 @@ const theme = {
     PROCESS: '#7B1FA2',
     INSTRUMENT: '#1565C0',
     NORMAL: '#81C784',
+    SYS_1: '#1B5E20',
+    SYS_2: '#0D47A1',
+    SYS_3: '#E65100',
+    SYS_4: '#4A148C',
   },
 };
 

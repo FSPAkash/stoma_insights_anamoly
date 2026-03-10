@@ -65,6 +65,7 @@ function TimeFilter({
           })}
         </select>
       </div>
+      <span style={{ fontSize: '9px', color: '#8A928A', fontWeight: 600, letterSpacing: '0.05em' }}>UTC</span>
       <div style={{ width: '1px', height: '20px', background: 'rgba(203,230,200,0.6)' }} />
       {isLatestMode ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>

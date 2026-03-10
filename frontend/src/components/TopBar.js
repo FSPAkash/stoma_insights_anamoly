@@ -73,11 +73,25 @@ const styles = {
     alignItems: 'center',
     gap: '12px',
   },
+  timeContainer: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+  },
   timeText: {
     fontSize: '15px',
     fontWeight: 500,
     color: '#4A524A',
     fontVariantNumeric: 'tabular-nums',
+  },
+  utcLabel: {
+    fontSize: '10px',
+    fontWeight: 600,
+    color: '#1B5E20',
+    background: 'rgba(27, 94, 32, 0.1)',
+    padding: '2px 5px',
+    borderRadius: '3px',
+    letterSpacing: '0.5px',
   },
   userWrap: {
     display: 'flex',
@@ -114,6 +128,18 @@ const styles = {
   },
 };
 
+// Helper function to create a UTC Date object for the analog clock
+function getUTCDate(date) {
+  return new Date(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate(),
+    date.getUTCHours(),
+    date.getUTCMinutes(),
+    date.getUTCSeconds()
+  );
+}
+
 function TopBar({ user, onLogout }) {
   const [time, setTime] = useState(new Date());
 
@@ -121,6 +147,15 @@ function TopBar({ user, onLogout }) {
     const timer = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // Create a UTC time object for the analog clock
+  const utcTime = getUTCDate(time);
+
+  // Format UTC time string
+  const utcTimeString = time.toLocaleTimeString('en-US', {
+    hour12: false,
+    timeZone: 'UTC',
+  });
 
   return (
     <>
@@ -146,10 +181,11 @@ function TopBar({ user, onLogout }) {
         </div>
         <div style={styles.right}>
           <div style={styles.clockWrap}>
-            <AnalogClock size={36} time={time} />
-            <span style={styles.timeText}>
-              {time.toLocaleTimeString('en-US', { hour12: false })}
-            </span>
+            <AnalogClock size={36} time={utcTime} />
+            <div style={styles.timeContainer}>
+              <span style={styles.timeText}>{utcTimeString}</span>
+              <span style={styles.utcLabel}>UTC</span>
+            </div>
           </div>
           <div style={styles.userWrap}>
             <div style={styles.avatar}>{user ? user.charAt(0).toUpperCase() : 'U'}</div>

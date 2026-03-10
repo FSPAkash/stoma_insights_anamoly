@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import GlassCard from './GlassCard';
-import { formatTimestamp, formatDuration, formatSensorName, formatScore } from '../utils/formatters';
+import { formatTimestamp, formatDuration, formatSensorName, formatScore, classColor, systemBgColor } from '../utils/formatters';
 import InfoTooltip from './InfoTooltip';
 
 const styles = {
@@ -110,8 +110,8 @@ const styles = {
     borderRadius: '20px',
     fontSize: '11px',
     fontWeight: 600,
-    background: cls === 'MECH' ? '#E8F5E9' : cls === 'ELEC' ? '#E0F2F1' : cls === 'THERM' ? '#FFF3E0' : cls === 'PROCESS' ? '#F3E5F5' : cls === 'INSTRUMENT' ? '#E3F2FD' : '#E6F4EA',
-    color: cls === 'MECH' ? '#1B5E20' : cls === 'ELEC' ? '#004D40' : cls === 'THERM' ? '#E65100' : cls === 'PROCESS' ? '#4A148C' : cls === 'INSTRUMENT' ? '#0D47A1' : '#1B5E20',
+    background: systemBgColor(cls),
+    color: classColor(cls),
   }),
   timeRange: {
     fontSize: '13px',
@@ -178,7 +178,7 @@ const INITIAL_SHOW = 3;
 function AlertEpisodeCards({ alerts, onSelectAlert, selectedDay }) {
   const [severityFilter, setSeverityFilter] = useState('ALL');
   const [classFilter, setClassFilter] = useState('ALL');
-  const [thresholdFilter, setThresholdFilter] = useState('ALL');
+
   const [sortBy, setSortBy] = useState('RECENT');
   const [expanded, setExpanded] = useState(false);
   const headerRef = useRef(null);
@@ -210,9 +210,7 @@ function AlertEpisodeCards({ alerts, onSelectAlert, selectedDay }) {
     if (classFilter !== 'ALL') {
       result = result.filter((a) => a.class === classFilter);
     }
-    if (thresholdFilter !== 'ALL') {
-      result = result.filter((a) => a.threshold === thresholdFilter);
-    }
+
     if (sortBy === 'RECENT') {
       return result.sort((a, b) => {
         const tsA = a.end_ts || a.start_ts || '';
@@ -225,7 +223,7 @@ function AlertEpisodeCards({ alerts, onSelectAlert, selectedDay }) {
       if (a.severity !== 'HIGH' && b.severity === 'HIGH') return 1;
       return (b.max_score || 0) - (a.max_score || 0);
     });
-  }, [nonNormalAlerts, severityFilter, classFilter, thresholdFilter, sortBy]);
+  }, [nonNormalAlerts, severityFilter, classFilter, sortBy]);
 
   const visibleAlerts = expanded ? filteredAlerts : filteredAlerts.slice(0, INITIAL_SHOW);
   const hiddenCount = filteredAlerts.length - INITIAL_SHOW;
@@ -234,7 +232,6 @@ function AlertEpisodeCards({ alerts, onSelectAlert, selectedDay }) {
   const clearFilters = () => {
     setSeverityFilter('ALL');
     setClassFilter('ALL');
-    setThresholdFilter('ALL');
     setExpanded(false);
   };
 
@@ -245,7 +242,7 @@ function AlertEpisodeCards({ alerts, onSelectAlert, selectedDay }) {
     }
   }, []);
 
-  const hasActiveFilter = severityFilter !== 'ALL' || classFilter !== 'ALL' || thresholdFilter !== 'ALL';
+  const hasActiveFilter = severityFilter !== 'ALL' || classFilter !== 'ALL';
 
   return (
     <GlassCard delay={0.55} style={{ marginTop: '8px' }} intensity="normal" padding="20px 24px 28px">
@@ -314,21 +311,6 @@ function AlertEpisodeCards({ alerts, onSelectAlert, selectedDay }) {
 
         <div style={styles.pillDivider} />
 
-        <span style={styles.filterLabel}>Threshold:</span>
-        {['ALL', 'HIGH', 'MEDIUM'].map((t) => (
-          <motion.span
-            key={t}
-            style={styles.pill(thresholdFilter === t)}
-            onClick={() => setThresholdFilter(t)}
-            whileHover={{ scale: 1.04 }}
-            whileTap={{ scale: 0.97 }}
-          >
-            {t}
-          </motion.span>
-        ))}
-
-        <div style={styles.pillDivider} />
-
         <span style={styles.filterLabel}>Sort:</span>
         <motion.span
           style={styles.pill(sortBy === 'RECENT')}
@@ -368,7 +350,7 @@ function AlertEpisodeCards({ alerts, onSelectAlert, selectedDay }) {
                 const sensors = alert.affected_sensors
                   ? String(alert.affected_sensors).split('|').slice(0, 4)
                   : [];
-                const key = `${alert.start_ts}-${alert.end_ts}-${alert.threshold}-${idx}`;
+                const key = `${alert.start_ts}-${alert.end_ts}-${alert.class}-${idx}`;
 
                 return (
                   <motion.div
@@ -394,7 +376,8 @@ function AlertEpisodeCards({ alerts, onSelectAlert, selectedDay }) {
                         <span style={styles.severityBadge(alert.severity)}>{alert.severity}</span>
                         <span style={styles.classBadge(alert.class)}>{alert.class}</span>
                       </div>
-                      <span style={{ fontSize: '11px', color: '#8A928A' }}>{alert.threshold}</span>
+
+
                     </div>
 
                     <div style={styles.timeRange}>

@@ -73,7 +73,7 @@ const filterBadgeStyle = {
   textTransform: 'none',
 };
 
-function NormalBehaviorPanel({ normalData, filterLabel }) {
+function NormalBehaviorPanel({ normalData, filterLabel, onFilterClick }) {
   if (!normalData) return null;
 
   const normalPct = normalData.normal_stats?.normal_pct ?? 0;
@@ -83,7 +83,7 @@ function NormalBehaviorPanel({ normalData, filterLabel }) {
       <div style={styles.heading}>
         Normal Sensor Behavior
         <InfoTooltip text="NORMAL classification is assigned when the fused subsystem_score falls below the medium threshold (0.55). These timestamps represent healthy sensor behavior with no detected drift, periodicity anomalies, physics violations, or multivariate reconstruction errors. Normal periods are excluded from alert episodes." />
-        {filterLabel && <span style={filterBadgeStyle}>{filterLabel}</span>}
+        {filterLabel && <span style={{ ...filterBadgeStyle, cursor: 'pointer' }} onClick={onFilterClick}>{filterLabel}</span>}
       </div>
       <div style={styles.row}>
         <div style={styles.stat}>

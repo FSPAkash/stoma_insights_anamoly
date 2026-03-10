@@ -1,15 +1,7 @@
-import React from 'react';
+import { useMemo } from 'react';
 import GlassCard from './GlassCard';
 import GaugeWidget from './GaugeWidget';
 import InfoTooltip from './InfoTooltip';
-
-const subsystemTooltips = {
-  mech_score: 'Mechanical subsystem score from 8 vibration sensors (VT tags). Computed via top-3 mean of per-sensor Engine A/B anomaly scores, folded with PCA multivariate score. Forced to 0 during downtime.',
-  elec_score: 'Electrical subsystem score from 30 electrical tags (current, voltage, power, PF, frequency) plus kW residual. Top-3 mean of sensor scores folded with PCA. Forced to 0 during downtime.',
-  therm_score: 'Thermal subsystem score from 11 temperature sensors (TT and RTD tags). Top-3 mean folded with PCA multivariate anomaly. Forced to 0 during downtime.',
-  physics_score: 'Physics validation score from identity residual checks: kW identity mismatch, PF identity, kVAR identity, and current unbalance. Each normalized by its 99th percentile. Final is the max across all components. Forced to 0 during downtime.',
-  subsystem_score: 'Fused subsystem score: weighted average of mech (0.35), elec (0.35), therm (0.15), and physics (0.15) scores.',
-};
 
 const filterBadgeStyle = {
   fontSize: '10px',
@@ -25,16 +17,8 @@ const filterBadgeStyle = {
   textTransform: 'none',
 };
 
-function SubsystemGauges({ stats, filterLabel }) {
+function SubsystemGauges({ stats, filterLabel, systems, onFilterClick }) {
   if (!stats) return null;
-
-  const subsystems = [
-    { key: 'mech_score', label: 'Mechanical' },
-    { key: 'elec_score', label: 'Electrical' },
-    { key: 'therm_score', label: 'Thermal' },
-    { key: 'physics_score', label: 'Physics' },
-    { key: 'subsystem_score', label: 'Fused Score' },
-  ];
 
   const gaugeColor = (val) => {
     if (val >= 0.8) return '#EF5350';
@@ -42,20 +26,57 @@ function SubsystemGauges({ stats, filterLabel }) {
     return '#4CAF50';
   };
 
+  // Build dynamic subsystem list from discovered systems + fixed scores
+  const subsystems = useMemo(() => {
+    const list = [];
+
+    // Dynamic SYS_* scores from stats keys
+    const sysKeys = Object.keys(stats)
+      .filter((k) => k.startsWith('score_SYS_'))
+      .sort();
+
+    if (sysKeys.length > 0) {
+      // New dynamic format
+      sysKeys.forEach((key) => {
+        const sysId = key.replace('score_', '');
+        const sysInfo = systems?.find((s) => s.system_id === sysId);
+        list.push({
+          key,
+          label: sysId.replace('_', ' '),
+          tooltip: sysInfo
+            ? `${sysId} subsystem score from ${sysInfo.sensor_count} sensors. Top-3 mean of per-sensor Engine A/B anomaly scores, folded with PCA multivariate score. Forced to 0 during downtime.`
+            : `${sysId} subsystem anomaly score. Forced to 0 during downtime.`,
+        });
+      });
+    } else {
+      // Legacy format fallback
+      if (stats.mech_score) list.push({ key: 'mech_score', label: 'Mechanical', tooltip: 'Mechanical subsystem score.' });
+      if (stats.elec_score) list.push({ key: 'elec_score', label: 'Electrical', tooltip: 'Electrical subsystem score.' });
+      if (stats.therm_score) list.push({ key: 'therm_score', label: 'Thermal', tooltip: 'Thermal subsystem score.' });
+    }
+
+    list.push({
+      key: 'subsystem_score',
+      label: 'Fused Score',
+      tooltip: 'Fused subsystem score: dynamically weighted average of all discovered subsystem scores, multiplied by SQS confidence and downtime gate.',
+    });
+
+    return list;
+  }, [stats, systems]);
+
   return (
     <GlassCard delay={0.35} style={{ marginTop: '16px' }} intensity="strong">
       <div style={{ fontSize: '12px', fontWeight: 500, color: '#6B736B', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '16px', display: 'flex', alignItems: 'center' }}>
         Subsystem Scores
-        <InfoTooltip text="Each subsystem score is the top-3 mean of per-sensor anomaly scores from Engine A (drift detection using rolling baseline + MAD) and Engine B (periodicity via FFT spectral ratio), folded with PCA reconstruction error. Fusion weights: mech 0.35, elec 0.35, therm 0.15, physics 0.15." />
-        {filterLabel && <span style={filterBadgeStyle}>{filterLabel}</span>}
+        <InfoTooltip text="Each subsystem score is the top-3 mean of per-sensor anomaly scores from Engine A (drift detection) and Engine B (periodicity), folded with PCA reconstruction error. Weights are dynamically assigned based on system size." />
+        {filterLabel && <span style={{ ...filterBadgeStyle, cursor: 'pointer' }} onClick={onFilterClick}>{filterLabel}</span>}
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-around', flexWrap: 'wrap', gap: '20px' }}>
         {subsystems.map((sub) => {
           const stat = stats[sub.key];
-          // Find the highest subsystem (excluding self for fused score)
           let topSub = null;
           if (sub.key === 'subsystem_score') {
-            const others = subsystems.filter((s) => s.key !== 'subsystem_score');
+            const others = subsystems.filter((s) => s.key !== 'subsystem_score' && s.key !== 'physics_score');
             for (const o of others) {
               const oMean = stats[o.key]?.mean;
               if (oMean != null && (topSub === null || oMean > topSub.val)) {
@@ -74,7 +95,7 @@ function SubsystemGauges({ stats, filterLabel }) {
               sublabel={stat ? `max: ${Number(stat.max).toFixed(3)}` : ''}
               color={gaugeColor(stat?.mean ?? 0)}
               size={110}
-              tooltip={subsystemTooltips[sub.key]}
+              tooltip={sub.tooltip}
               hoverDetail={hoverDetail}
             />
           );

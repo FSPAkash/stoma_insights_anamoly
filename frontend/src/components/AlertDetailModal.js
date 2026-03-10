@@ -17,7 +17,7 @@ const styles = {
     background: 'rgba(26, 31, 26, 0.4)',
     backdropFilter: 'blur(16px)',
     WebkitBackdropFilter: 'blur(16px)',
-    zIndex: 1000,
+    zIndex: 1100,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -189,7 +189,8 @@ function AlertDetailModal({ alert, onClose }) {
   if (!alert) return null;
 
   const severityStyle = alert.severity === 'HIGH' ? { bg: '#FFCDD2', text: '#C62828' } : { bg: '#FFE0B2', text: '#E65100' };
-  const classStyle = { MECH: { bg: '#E8F5E9', text: '#1B5E20' }, ELEC: { bg: '#E0F2F1', text: '#004D40' }, THERM: { bg: '#FFF3E0', text: '#E65100' }, PROCESS: { bg: '#F3E5F5', text: '#4A148C' }, INSTRUMENT: { bg: '#E3F2FD', text: '#0D47A1' } }[alert.class] || { bg: '#E6F4EA', text: '#1B5E20' };
+  const classStyleMap = { MECH: { bg: '#E8F5E9', text: '#1B5E20' }, ELEC: { bg: '#E0F2F1', text: '#004D40' }, THERM: { bg: '#FFF3E0', text: '#E65100' }, PROCESS: { bg: '#F3E5F5', text: '#4A148C' }, INSTRUMENT: { bg: '#E3F2FD', text: '#0D47A1' }, SYS_1: { bg: '#E8F5E9', text: '#1B5E20' }, SYS_2: { bg: '#E3F2FD', text: '#0D47A1' }, SYS_3: { bg: '#FFF3E0', text: '#E65100' }, SYS_4: { bg: '#F3E5F5', text: '#4A148C' } };
+  const classStyle = classStyleMap[alert.class] || { bg: '#E6F4EA', text: '#1B5E20' };
 
   return (
     <>
@@ -295,7 +296,7 @@ function AlertDetailModal({ alert, onClose }) {
               <div style={styles.loading}>Loading decomposition data...</div>
             ) : (
               <>
-                <SensorFlowDecomposition flowData={flowData} onSensorClick={(id) => setSelectedSensor(id)} />
+                <SensorFlowDecomposition flowData={flowData} onSensorClick={(id) => setSelectedSensor(id)} alertClass={alert.class} />
 
                 {sensorAlerts.length > 0 && (
                   <>

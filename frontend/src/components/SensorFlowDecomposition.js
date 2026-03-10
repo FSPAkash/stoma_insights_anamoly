@@ -97,9 +97,14 @@ const subsystemColors = {
   ELEC: 'linear-gradient(135deg, #388E3C, #4CAF50)',
   THERM: 'linear-gradient(135deg, #E65100, #FFA726)',
   INSTRUMENT: 'linear-gradient(135deg, #0D47A1, #1565C0)',
+  SYS_1: 'linear-gradient(135deg, #1B5E20, #388E3C)',
+  SYS_2: 'linear-gradient(135deg, #0D47A1, #1976D2)',
+  SYS_3: 'linear-gradient(135deg, #E65100, #FB8C00)',
+  SYS_4: 'linear-gradient(135deg, #4A148C, #7B1FA2)',
+  ISOLATED: 'linear-gradient(135deg, #546E7A, #78909C)',
 };
 
-function SensorFlowDecomposition({ flowData, onSensorClick }) {
+function SensorFlowDecomposition({ flowData, onSensorClick, alertClass }) {
   const [hoveredSensor, setHoveredSensor] = React.useState(null);
 
   const subsystemSensors = useMemo(() => {
@@ -132,13 +137,25 @@ function SensorFlowDecomposition({ flowData, onSensorClick }) {
     );
   }
 
-  const subsystems = Object.entries(flowData.subsystems)
+  // Filter subsystems based on alert class
+  let subsystems = Object.entries(flowData.subsystems)
     .sort(([, a], [, b]) => (b.total_risk || 0) - (a.total_risk || 0));
+
+  if (alertClass && alertClass !== 'PROCESS' && alertClass !== 'NORMAL') {
+    // For system-specific alerts, only show that subsystem
+    subsystems = subsystems.filter(([name]) => name === alertClass);
+  } else if (alertClass === 'PROCESS') {
+    // For PROCESS alerts, show subsystems with meaningful risk contribution (> 1% of total)
+    const topRisk = subsystems.length ? subsystems[0][1].total_risk || 0 : 0;
+    if (topRisk > 0) {
+      subsystems = subsystems.filter(([, data]) => (data.total_risk || 0) / topRisk > 0.05);
+    }
+  }
 
   return (
     <div style={styles.container}>
       <div style={styles.heading}>
-        Risk Flow: Alert Episode to Sensor Level
+        Risk Flow: {alertClass && alertClass !== 'PROCESS' ? `${alertClass.replace('_', ' ')} Breakdown` : 'Alert Episode to Sensor Level'}
       </div>
       <div
         style={{
@@ -147,8 +164,9 @@ function SensorFlowDecomposition({ flowData, onSensorClick }) {
           marginBottom: '16px',
         }}
       >
-        Each row shows subsystem contribution flowing into individual sensor risk components.
-        Click a sensor for detailed view.
+        {alertClass && alertClass !== 'PROCESS'
+          ? `Sensor risk decomposition for the ${alertClass.replace('_', ' ')} subsystem during this alert episode. Click a sensor for detailed view.`
+          : 'Each row shows subsystem contribution flowing into individual sensor risk components. Click a sensor for detailed view.'}
       </div>
 
       {subsystems.map(([subsystem, data], idx) => {

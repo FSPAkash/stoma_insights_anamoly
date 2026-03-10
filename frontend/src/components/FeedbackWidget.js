@@ -14,6 +14,9 @@ const SECTIONS = [
   { id: 'alert_episode_detail', label: 'Alert Episode Detail', desc: 'Modal with gauges, metadata, sensor table' },
   { id: 'sensor_decomposition', label: 'Sensor Decomposition', desc: 'Risk breakdown by sensor within an episode' },
   { id: 'sensor_detail', label: 'Sensor Detail Modal', desc: 'Individual sensor drill-down view' },
+  { id: 'detected_systems', label: 'Detected Systems', desc: 'Auto-discovered system tags in header' },
+  { id: 'subsystem_behavior_chart', label: 'Subsystem Behavior Chart', desc: 'Raw sensor traces per system with alert/downtime bands' },
+  { id: 'time_filter', label: 'Time Filter', desc: 'Floating time filter widget and date/hour controls' },
   { id: 'overall', label: 'Overall Dashboard', desc: 'General look, feel, and usability' },
 ];
 

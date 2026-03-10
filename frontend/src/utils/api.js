@@ -50,6 +50,12 @@ export const getSensorDetail = (sensorId) =>
 export const getNormalPeriods = () =>
   api.get('/normal_periods');
 
+export const getSystems = () =>
+  api.get('/systems');
+
+export const getSystemSensorValues = (systemId, downsample = 5) =>
+  api.get(`/systems/${encodeURIComponent(systemId)}/sensors`, { params: { downsample } });
+
 export const submitFeedback = (feedback) =>
   api.post('/feedback', feedback);
 

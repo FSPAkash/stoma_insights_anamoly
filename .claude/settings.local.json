@@ -25,7 +25,11 @@
       "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
       "Bash(curl -s -X POST http://localhost:5000/api/run_pipeline)",
       "Bash(curl -s http://localhost:5000/api/pipeline_status)",
-      "Bash(tasklist)"
+      "Bash(tasklist)",
+      "Bash(ls c:/Users/AkashPatil/Anamoly/backend/data/*.csv)",
+      "Bash(ls c:/Users/AkashPatil/Anamoly/backend/data_analysis_data_bq*.parquet)",
+      "Bash(ls c:/Users/AkashPatil/Anamoly/backend/*.parquet)",
+      "Bash(npx react-scripts build)"
     ]
   }
 }
