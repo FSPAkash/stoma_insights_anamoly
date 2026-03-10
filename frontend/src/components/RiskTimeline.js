@@ -100,16 +100,48 @@ const CustomTooltip = ({ active, payload, label }) => {
   );
 };
 
+const timeInputStyle = {
+  fontSize: '12px',
+  padding: '4px 8px',
+  borderRadius: '6px',
+  border: '1px solid rgba(203,230,200,0.6)',
+  background: 'rgba(255,255,255,0.8)',
+  color: '#1B5E20',
+  fontWeight: 500,
+  fontVariantNumeric: 'tabular-nums',
+  outline: 'none',
+  cursor: 'pointer',
+};
+
+const HOUR_OPTIONS = [1, 2, 4, 8, 12, 24];
+
+const pillStyle = (active) => ({
+  padding: '4px 10px',
+  fontSize: '11px',
+  fontWeight: active ? 600 : 400,
+  color: active ? '#fff' : '#4a524a',
+  background: active ? '#1B5E20' : 'rgba(0,0,0,0.04)',
+  border: active ? '1px solid #1B5E20' : '1px solid rgba(203,230,200,0.5)',
+  borderRadius: '6px',
+  cursor: 'pointer',
+  transition: 'all 0.15s ease',
+  userSelect: 'none',
+  whiteSpace: 'nowrap',
+});
+
 function RiskTimeline({ timeseries, timestampCol }) {
   const [visibleLines, setVisibleLines] = useState(() =>
     Object.fromEntries(LINES.map((l) => [l.key, true]))
   );
   const [selectedDay, setSelectedDay] = useState(null);
+  const [isLatestMode, setIsLatestMode] = useState(true);
+  const [lastNHours, setLastNHours] = useState(24);
+  const [startTime, setStartTime] = useState('00:00');
+  const [endTime, setEndTime] = useState('23:59');
 
   const toggleLine = (key) => {
     setVisibleLines((prev) => {
       const activeCount = Object.values(prev).filter(Boolean).length;
-      // Don't allow hiding the last visible line
       if (prev[key] && activeCount <= 1) return prev;
       return { ...prev, [key]: !prev[key] };
     });
@@ -126,28 +158,63 @@ function RiskTimeline({ timeseries, timestampCol }) {
     return Array.from(daySet).sort();
   }, [timeseries, timestampCol]);
 
-  // Default to most recent day
+  const latestDay = availableDays.length ? availableDays[availableDays.length - 1] : null;
+
+  // Default to most recent day in latest mode
   React.useEffect(() => {
     if (availableDays.length && !availableDays.includes(selectedDay)) {
       setSelectedDay(availableDays[availableDays.length - 1]);
+      setIsLatestMode(true);
     }
   }, [availableDays, selectedDay]);
 
+  const handleLatestClick = () => {
+    setSelectedDay(latestDay);
+    setIsLatestMode(true);
+    setLastNHours(24);
+  };
+
+  const handleDayChange = (day) => {
+    setSelectedDay(day);
+    setIsLatestMode(false);
+    setStartTime('00:00');
+    setEndTime('23:59');
+  };
+
   const data = useMemo(() => {
     if (!timeseries || !timeseries.length || !selectedDay) return [];
-    return timeseries
-      .filter((row) => {
-        const ts = row[timestampCol];
-        return ts && String(ts).substring(0, 10) === selectedDay;
-      })
-      .map((row) => ({
-        ...row,
-        ts: row[timestampCol]
-          ? String(row[timestampCol]).substring(11, 16)
-          : '',
-        fullTs: row[timestampCol] || '',
-      }));
-  }, [timeseries, timestampCol, selectedDay]);
+    // Filter by day
+    const dayData = timeseries.filter((row) => {
+      const ts = row[timestampCol];
+      return ts && String(ts).substring(0, 10) === selectedDay;
+    });
+    // Apply time filter based on mode
+    let filtered;
+    if (isLatestMode && lastNHours < 24 && dayData.length > 0) {
+      const lastTs = dayData[dayData.length - 1][timestampCol];
+      if (lastTs) {
+        const end = new Date(String(lastTs));
+        const start = new Date(end.getTime() - lastNHours * 60 * 60 * 1000);
+        filtered = dayData.filter((row) => new Date(String(row[timestampCol])) >= start);
+      } else {
+        filtered = dayData;
+      }
+    } else if (!isLatestMode) {
+      filtered = dayData.filter((row) => {
+        const hhmm = String(row[timestampCol]).substring(11, 16);
+        return hhmm >= startTime && hhmm <= endTime;
+      });
+    } else {
+      filtered = dayData;
+    }
+    return filtered.map((row) => ({
+      ...row,
+      ts: row[timestampCol]
+        ? String(row[timestampCol]).substring(11, 16)
+        : '',
+      fullTs: row[timestampCol] || '',
+    }));
+  }, [timeseries, timestampCol, selectedDay, isLatestMode, lastNHours, startTime, endTime]);
 
   return (
     <GlassCard delay={0.45} style={{ marginTop: '8px' }} intensity="strong">
@@ -162,8 +229,55 @@ function RiskTimeline({ timeseries, timestampCol }) {
         </div>
       ) : (
         <>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
-          <div style={{ ...styles.legend, marginBottom: 0 }}>
+          {/* Day + Time filter bar */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap', marginBottom: '14px', padding: '8px 14px', background: 'rgba(245,248,245,0.6)', borderRadius: '10px', border: '1px solid rgba(203,230,200,0.35)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={pillStyle(isLatestMode)} onClick={handleLatestClick}>
+                Latest{latestDay ? ` (${new Date(latestDay + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})` : ''}
+              </div>
+              <span style={{ fontSize: '10px', color: '#8A928A', fontWeight: 500 }}>or</span>
+              <select
+                value={isLatestMode ? '' : (selectedDay || '')}
+                onChange={(e) => handleDayChange(e.target.value)}
+                style={{ ...timeInputStyle, paddingRight: '4px', color: isLatestMode ? '#8A928A' : '#1B5E20' }}
+              >
+                {isLatestMode && <option value="">Select date...</option>}
+                {availableDays.map((day) => {
+                  const d = new Date(day + 'T00:00:00');
+                  const label = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+                  return <option key={day} value={day}>{label}</option>;
+                })}
+              </select>
+            </div>
+            <div style={{ width: '1px', height: '20px', background: 'rgba(203,230,200,0.6)' }} />
+            {isLatestMode ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                {HOUR_OPTIONS.map((h) => (
+                  <div key={h} style={pillStyle(lastNHours === h)} onClick={() => setLastNHours(h)}>
+                    {h === 24 ? 'Full Day' : `${h}h`}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '10px', fontWeight: 600, color: '#8A928A', textTransform: 'uppercase', letterSpacing: '0.05em' }}>From</span>
+                <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} style={timeInputStyle} />
+                <span style={{ fontSize: '10px', fontWeight: 600, color: '#8A928A', textTransform: 'uppercase', letterSpacing: '0.05em' }}>To</span>
+                <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} style={timeInputStyle} />
+                {(startTime !== '00:00' || endTime !== '23:59') && (
+                  <div
+                    onClick={() => { setStartTime('00:00'); setEndTime('23:59'); }}
+                    style={{ fontSize: '10px', color: '#8A928A', cursor: 'pointer', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(203,230,200,0.5)' }}
+                  >
+                    Reset
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Legend */}
+          <div style={styles.legend}>
             {LINES.map((line) => (
               <div
                 key={line.key}
@@ -182,30 +296,6 @@ function RiskTimeline({ timeseries, timestampCol }) {
               <div style={{ width: '16px', height: '2px', background: '#FFA726', borderTop: '1px dashed #FFA726' }} />
               <span>MEDIUM (0.55)</span>
             </div>
-          </div>
-          {availableDays.length > 1 && (
-            <select
-              value={selectedDay}
-              onChange={(e) => setSelectedDay(e.target.value)}
-              style={{
-                fontSize: '11px',
-                padding: '5px 10px',
-                borderRadius: '8px',
-                border: '1px solid rgba(203,230,200,0.6)',
-                background: 'rgba(255,255,255,0.7)',
-                color: '#4a524a',
-                cursor: 'pointer',
-                outline: 'none',
-                fontWeight: 500,
-              }}
-            >
-              {availableDays.map((day) => {
-                const d = new Date(day + 'T00:00:00');
-                const label = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-                return <option key={day} value={day}>{label}</option>;
-              })}
-            </select>
-          )}
           </div>
           <ResponsiveContainer width="100%" height={300}>
             <AreaChart data={data} margin={{ top: 10, right: 20, bottom: 5, left: 0 }}>
