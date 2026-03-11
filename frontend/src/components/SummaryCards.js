@@ -292,7 +292,7 @@ function SummaryCards({ summary, stats, systems }) {
               : '--'}
           </div>
           <div style={styles.statSub}>
-            {stats?.running_count ?? '--'} running / {stats?.downtime_count ?? 0} downtime min
+            {stats?.running_count ?? '--'} running / {stats?.downtime_count ?? 0} downtime
           </div>
         </GlassCard>
 

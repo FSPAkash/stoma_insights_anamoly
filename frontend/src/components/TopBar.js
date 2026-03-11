@@ -177,7 +177,7 @@ function TopBar({ user, onLogout }) {
           </div>
           <div style={styles.divider} />
           <span style={styles.pageTitle}>Anomaly Detection Dashboard</span>
-          <InfoTooltip text="This dashboard displays outputs from a multi-engine anomaly detection pipeline. Data is read from 1-minute resampled sensor timeseries covering 49 channels (8 vibration, 11 temperature, 30 electrical). Anomalies are detected via Engine A (drift/baseline), Engine B (FFT periodicity), physics validation (identity checks), and PCA multivariate analysis. Results are fused into a unified risk score per timestamp." />
+          <InfoTooltip text="Sensors are grouped into subsystems via correlation clustering, scored independently, and fused into a unified risk score. SQS tracks signal quality, downtime is auto-detected from electrical signals, and alerts are classified by dominant subsystem." />
         </div>
         <div style={styles.right}>
           <div style={styles.clockWrap}>

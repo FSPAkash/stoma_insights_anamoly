@@ -273,6 +273,19 @@ def get_scores():
 
     total_rows = len(df)
 
+    # Compute counts on full dataset before pagination
+    normal_count = 0
+    anomaly_count = 0
+    if "class" in df.columns:
+        normal_count = int((df["class"] == "NORMAL").sum())
+        anomaly_count = int((df["class"] != "NORMAL").sum())
+
+    running_count = 0
+    downtime_count = 0
+    if "mode" in df.columns:
+        running_count = int((df["mode"] == "RUNNING").sum())
+        downtime_count = int((df["mode"] == "DOWNTIME").sum())
+
     if limit:
         df = df.iloc[offset: offset + limit]
 
@@ -295,18 +308,6 @@ def get_scores():
                 "min": round(float(series.min()), 4) if not series.isna().all() else None,
                 "std": round(float(series.std()), 4) if not series.isna().all() else None,
             }
-
-    normal_count = 0
-    anomaly_count = 0
-    if "class" in df.columns:
-        normal_count = int((df["class"] == "NORMAL").sum())
-        anomaly_count = int((df["class"] != "NORMAL").sum())
-
-    running_count = 0
-    downtime_count = 0
-    if "mode" in df.columns:
-        running_count = int((df["mode"] == "RUNNING").sum())
-        downtime_count = int((df["mode"] == "DOWNTIME").sum())
 
     stats["normal_count"] = normal_count
     stats["anomaly_count"] = anomaly_count
