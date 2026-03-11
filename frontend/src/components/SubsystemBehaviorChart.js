@@ -116,25 +116,23 @@ const BaseCustomTooltip = ({ active, payload, alertBands, downtimeBands }) => {
   const inDowntime = idx != null && downtimeBands.some((b) => idx >= b.start && idx <= b.end);
   const matchedAlert = idx != null ? alertBands.find((b) => idx >= b.start && idx <= b.end) : null;
 
-  let zoneBg = null;
-  let zoneLabel = null;
-  let zoneBorder = null;
+  const zoneLabels = [];
+  if (inDowntime) {
+    zoneLabels.push({ text: 'Downtime', color: '#616161', bg: 'rgba(0,0,0,0.04)', border: '1px solid rgba(0,0,0,0.12)' });
+  }
   if (matchedAlert) {
     const isProcess = matchedAlert.cls === 'PROCESS';
     const isHigh = matchedAlert.severity === 'HIGH';
     if (isProcess) {
-      zoneBg = 'rgba(156,39,176,0.08)';
-      zoneBorder = '1px solid rgba(156,39,176,0.25)';
-      zoneLabel = { text: 'Process Alert', color: '#9C27B0' };
+      zoneLabels.push({ text: 'Process Alert', color: '#9C27B0', bg: 'rgba(156,39,176,0.08)', border: '1px solid rgba(156,39,176,0.25)' });
     } else {
-      zoneBg = isHigh ? 'rgba(239,83,80,0.10)' : 'rgba(255,167,38,0.10)';
-      zoneBorder = isHigh ? '1px solid rgba(239,83,80,0.3)' : '1px solid rgba(255,167,38,0.3)';
-      zoneLabel = { text: `System Alert \u00B7 ${matchedAlert.severity}`, color: isHigh ? '#D32F2F' : '#E65100' };
+      zoneLabels.push({
+        text: `System Alert \u00B7 ${matchedAlert.severity}`,
+        color: isHigh ? '#D32F2F' : '#E65100',
+        bg: isHigh ? 'rgba(239,83,80,0.10)' : 'rgba(255,167,38,0.10)',
+        border: isHigh ? '1px solid rgba(239,83,80,0.3)' : '1px solid rgba(255,167,38,0.3)',
+      });
     }
-  } else if (inDowntime) {
-    zoneBg = 'rgba(0,0,0,0.04)';
-    zoneBorder = '1px solid rgba(0,0,0,0.12)';
-    zoneLabel = { text: 'Downtime', color: '#616161' };
   }
 
   return (
@@ -151,24 +149,24 @@ const BaseCustomTooltip = ({ active, payload, alertBands, downtimeBands }) => {
         maxWidth: '320px',
       }}
     >
-      {zoneLabel && (
-        <div style={{
-          background: zoneBg,
-          border: zoneBorder,
+      {zoneLabels.map((zl, zi) => (
+        <div key={zi} style={{
+          background: zl.bg,
+          border: zl.border,
           borderRadius: '6px',
           padding: '3px 8px',
-          marginBottom: '8px',
+          marginBottom: '4px',
           fontSize: '10px',
           fontWeight: 600,
-          color: zoneLabel.color,
+          color: zl.color,
           letterSpacing: '0.03em',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
           gap: '8px',
         }}>
-          {zoneLabel.text}
-          {matchedAlert && (
+          {zl.text}
+          {matchedAlert && zl === zoneLabels[zoneLabels.length - 1] && (
             <span style={{
               fontSize: '9px',
               fontWeight: 500,
@@ -179,7 +177,7 @@ const BaseCustomTooltip = ({ active, payload, alertBands, downtimeBands }) => {
             </span>
           )}
         </div>
-      )}
+      ))}
       <div style={{ fontWeight: 600, color: '#1B5E20', marginBottom: '6px' }}>{displayTs}</div>
       {payload.map((p, i) => (
         <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', marginBottom: '2px' }}>
@@ -215,7 +213,7 @@ function SubsystemBehaviorChart({ systems, filterLabel, selectedDay, isLatestMod
     if (!systemId) return;
     setLoading(true);
     try {
-      const res = await getSystemSensorValues(systemId, 5);
+      const res = await getSystemSensorValues(systemId, 1);
       setSensorData(res.data);
       // Initialize all sensors as visible
       const vis = {};
@@ -331,6 +329,28 @@ function SubsystemBehaviorChart({ systems, filterLabel, selectedDay, isLatestMod
   }, [sensorData, chartData, selectedDay, findClosestIdx]);
 
   const sensors = sensorData?.sensors || [];
+
+  // Compute dynamic Y-axis domain from visible sensors
+  const yDomain = useMemo(() => {
+    if (!chartData.length || !sensors.length) return ['auto', 'auto'];
+    const activeSensors = sensors.filter((s) => visibleSensors[s]);
+    if (!activeSensors.length) return ['auto', 'auto'];
+    let min = Infinity;
+    let max = -Infinity;
+    for (const row of chartData) {
+      for (const s of activeSensors) {
+        const v = row[s];
+        if (v != null && isFinite(v)) {
+          if (v < min) min = v;
+          if (v > max) max = v;
+        }
+      }
+    }
+    if (!isFinite(min) || !isFinite(max)) return ['auto', 'auto'];
+    const range = max - min;
+    const pad = range > 0 ? range * 0.05 : 1;
+    return [Math.floor((min - pad) * 100) / 100, Math.ceil((max + pad) * 100) / 100];
+  }, [chartData, sensors, visibleSensors]);
 
   // Handle chart click: if inside an alert band, open the corresponding alert episode
   const handleChartClick = useCallback((e) => {
@@ -476,46 +496,51 @@ function SubsystemBehaviorChart({ systems, filterLabel, selectedDay, isLatestMod
                   }}
                 />
                 <YAxis
+                  domain={yDomain}
                   tick={{ fontSize: 10, fill: '#8A928A' }}
                   tickLine={false}
                 />
                 <Tooltip content={<BaseCustomTooltip alertBands={alertBands} downtimeBands={downtimeBands} />} />
 
-                {/* Downtime bands */}
+                {/* Downtime episode bands */}
                 {downtimeBands.map((band, i) => (
-                  <ReferenceArea
-                    key={`dt-${i}`}
-                    x1={band.start}
-                    x2={band.end}
-                    fill="rgba(0,0,0,0.06)"
-                    fillOpacity={1}
-                    strokeOpacity={0}
-                  />
+                    <ReferenceArea
+                      key={`dt-${i}`}
+                      x1={band.start}
+                      x2={band.end}
+                      fill="rgba(0,0,0,0.06)"
+                      fillOpacity={1}
+                      strokeOpacity={0}
+                    />
                 ))}
 
                 {/* Alert bands - system-specific (solid) */}
-                {alertBands.filter((b) => b.cls !== 'PROCESS').map((band, i) => (
-                  <ReferenceArea
-                    key={`alert-sys-${i}`}
-                    x1={band.start}
-                    x2={band.end}
-                    fill={band.severity === 'HIGH' ? 'rgba(239,83,80,0.18)' : 'rgba(255,167,38,0.15)'}
-                    fillOpacity={1}
-                    strokeOpacity={0}
-                  />
-                ))}
+                {alertBands.filter((b) => b.cls !== 'PROCESS').map((band, i) => {
+                  return (
+                    <ReferenceArea
+                      key={`alert-sys-${i}`}
+                      x1={band.start}
+                      x2={band.end}
+                      fill={band.severity === 'HIGH' ? 'rgba(239,83,80,0.18)' : 'rgba(255,167,38,0.15)'}
+                      fillOpacity={1}
+                      strokeOpacity={0}
+                    />
+                  );
+                })}
                 {/* Alert bands - PROCESS (lighter) */}
-                {alertBands.filter((b) => b.cls === 'PROCESS').map((band, i) => (
-                  <ReferenceArea
-                    key={`alert-proc-${i}`}
-                    x1={band.start}
-                    x2={band.end}
-                    fill="rgba(156,39,176,0.08)"
-                    fillOpacity={1}
-                    stroke="rgba(156,39,176,0.2)"
-                    strokeDasharray="4 3"
-                  />
-                ))}
+                {alertBands.filter((b) => b.cls === 'PROCESS').map((band, i) => {
+                  return (
+                    <ReferenceArea
+                      key={`alert-proc-${i}`}
+                      x1={band.start}
+                      x2={band.end}
+                      fill="rgba(156,39,176,0.08)"
+                      fillOpacity={1}
+                      stroke="rgba(156,39,176,0.2)"
+                      strokeDasharray="4 3"
+                    />
+                  );
+                })}
 
                 {/* Sensor lines */}
                 {sensors.map((s, i) =>

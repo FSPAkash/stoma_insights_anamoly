@@ -29,7 +29,11 @@
       "Bash(ls c:/Users/AkashPatil/Anamoly/backend/data/*.csv)",
       "Bash(ls c:/Users/AkashPatil/Anamoly/backend/data_analysis_data_bq*.parquet)",
       "Bash(ls c:/Users/AkashPatil/Anamoly/backend/*.parquet)",
-      "Bash(npx react-scripts build)"
+      "Bash(npx react-scripts build)",
+      "Bash(grep -v \"^$\")",
+      "Bash(for f:*)",
+      "Bash(do cp:*)",
+      "Bash(curl -s \"http://localhost:5000/api/systems/SYS_1/sensors?downsample=1\")"
     ]
   }
 }

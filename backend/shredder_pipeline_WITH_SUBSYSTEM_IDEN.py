@@ -343,7 +343,7 @@ print("✅ Downtime detection complete.")
 
 
 # %%
-df
+df.to_csv(os.path.join(cfg.output_dir, "df_chart_data.csv"))
 
 # %%
 

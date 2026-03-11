@@ -521,9 +521,17 @@ def get_system_sensor_values(system_id):
     """Return raw sensor time series for a system, plus downtime bands and alerts."""
     downsample = request.args.get("downsample", default=5, type=int)
 
-    # Load sensor values
-    fname = f"sensor_values_{system_id}.csv"
-    sensor_df, ts_col = load_csv_with_ts(fname)
+    # Load sensor values from df_chart_data.csv, filtered by catalog mapping
+    catalog_df = load_csv("dynamic_catalog.csv")
+    chart_df, ts_col = load_csv_with_ts("df_chart_data.csv")
+    if not chart_df.empty and not catalog_df.empty:
+        sys_sensors = catalog_df[catalog_df["system"] == system_id]["sensor"].tolist()
+        keep_cols = [ts_col] + [s for s in sys_sensors if s in chart_df.columns] if ts_col else [s for s in sys_sensors if s in chart_df.columns]
+        sensor_df = chart_df[keep_cols]
+    else:
+        # Fallback to per-system files
+        fname = f"sensor_values_{system_id}.csv"
+        sensor_df, ts_col = load_csv_with_ts(fname)
     if sensor_df.empty:
         return jsonify({"timeseries": [], "downtime_bands": [], "alert_bands": [], "sensors": []})
 
@@ -537,27 +545,25 @@ def get_system_sensor_values(system_id):
 
     timeseries = sensor_df.to_dict(orient="records")
 
-    # Downtime bands from scores.csv
+    # Downtime bands from scores.csv — time-based episode merging
     scores_df, scores_ts = load_csv_with_ts("scores.csv")
     downtime_bands = []
     if not scores_df.empty and "mode" in scores_df.columns and scores_ts:
         dt_mask = scores_df["mode"] == "DOWNTIME"
         if dt_mask.any():
-            dt_indices = dt_mask[dt_mask].index.tolist()
-            bands = []
-            start = dt_indices[0]
-            prev = start
-            for idx in dt_indices[1:]:
-                if idx - prev > 1:
-                    bands.append((start, prev))
-                    start = idx
-                prev = idx
-            bands.append((start, prev))
-            for s, e in bands:
-                downtime_bands.append({
-                    "start": str(scores_df.iloc[s][scores_ts]),
-                    "end": str(scores_df.iloc[e][scores_ts]),
-                })
+            dt_times = pd.to_datetime(scores_df.loc[dt_mask, scores_ts])
+            dt_times = dt_times.sort_values().reset_index(drop=True)
+            merge_gap = pd.Timedelta(minutes=15)
+            span_start = dt_times.iloc[0]
+            span_end = dt_times.iloc[0]
+            for t in dt_times.iloc[1:]:
+                if t - span_end <= merge_gap:
+                    span_end = t
+                else:
+                    downtime_bands.append({"start": str(span_start), "end": str(span_end)})
+                    span_start = t
+                    span_end = t
+            downtime_bands.append({"start": str(span_start), "end": str(span_end)})
 
     # Alert bands filtered to this system
     alerts_df = load_csv("alerts.csv")
