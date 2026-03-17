@@ -97,7 +97,6 @@ const styles = {
   },
   sectionWrap: {
     position: 'relative',
-    borderLeft: '3px solid rgba(27,94,32,0.13)',
     paddingLeft: '20px',
     marginLeft: '4px',
     marginTop: '0',

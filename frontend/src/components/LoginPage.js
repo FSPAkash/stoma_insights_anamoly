@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { login } from '../utils/api';
+import { login, betaLogin } from '../utils/api';
 
 const LOGO_SRC = '/stoma.png';
 const FS_LOGO_SRC = '/FS.png';
@@ -113,14 +113,15 @@ function LoginPage({ onLogin }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e, betaMode = false) => {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
-      const res = await login(username, password);
+      const loginFn = betaMode ? betaLogin : login;
+      const res = await loginFn(username, password);
       if (res.data.success) {
-        onLogin(res.data.username);
+        onLogin(res.data.username, betaMode ? 'beta' : 'stable');
       }
     } catch (err) {
       setError('Invalid credentials. Please try again.');
@@ -271,6 +272,7 @@ function LoginPage({ onLogin }) {
         }
       `}</style>
 
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative', zIndex: 1 }}>
       <motion.div
         style={styles.card}
         initial={{ opacity: 0, y: 30, scale: 0.96 }}
@@ -372,6 +374,34 @@ function LoginPage({ onLogin }) {
           <img src={FS_LOGO_SRC} alt="Findability Sciences" style={{ height: '18px' }} />
         </div>
       </motion.div>
+
+      <motion.button
+        type="button"
+        style={{
+          marginTop: '14px',
+          padding: '8px 24px',
+          background: 'rgba(255,255,255,0.45)',
+          backdropFilter: 'blur(12px)',
+          color: '#2E7D32',
+          border: '1.5px solid rgba(46,125,50,0.35)',
+          borderRadius: '10px',
+          fontSize: '12px',
+          fontWeight: 600,
+          cursor: 'pointer',
+          letterSpacing: '0.02em',
+          opacity: loading ? 0.7 : 1,
+        }}
+        disabled={loading}
+        onClick={(e) => handleSubmit(e, true)}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.4, delay: 0.3 }}
+        whileHover={{ scale: 1.02, borderColor: 'rgba(129,199,132,0.7)', color: '#66BB6A' }}
+        whileTap={{ scale: 0.98 }}
+      >
+        {loading ? 'Authenticating...' : 'Sign In to Beta'}
+      </motion.button>
+      </div>
     </div>
   );
 }

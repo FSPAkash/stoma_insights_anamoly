@@ -65,4 +65,55 @@ export const runPipeline = () =>
 export const getPipelineStatus = () =>
   api.get('/pipeline_status');
 
+// =============================================================================
+// BETA API
+// =============================================================================
+export const betaLogin = (username, password) =>
+  api.post('/beta/login', { username, password });
+
+export const getBetaOverview = () =>
+  api.get('/beta/overview');
+
+export const getBetaInvalidSensors = (threshold = 0.10) =>
+  api.get('/beta/invalid_sensors', { params: { threshold } });
+
+export const getBetaSubsystems = () =>
+  api.get('/beta/subsystems');
+
+export const getBetaSensorQuality = (systemId, downsample = 1) =>
+  api.get(`/beta/sensor_quality/${encodeURIComponent(systemId)}`, { params: { downsample } });
+
+export const getBetaSubsystemScores = (downsample = 1) =>
+  api.get('/beta/subsystem_scores', { params: { downsample } });
+
+export const getBetaAeMetadata = () =>
+  api.get('/beta/ae_metadata');
+
+export const getBetaAlerts = () =>
+  api.get('/beta/alerts');
+
+export const getBetaScoresTimeseries = (downsample = 1) =>
+  api.get('/beta/scores/timeseries', { params: { downsample } });
+
+export const getBetaDashboardSummary = () =>
+  api.get('/beta/dashboard/summary');
+
+export const getBetaScores = (params = {}) =>
+  api.get('/beta/scores', { params });
+
+export const getBetaNormalPeriods = () =>
+  api.get('/beta/normal_periods');
+
+export const getBetaSystems = () =>
+  api.get('/beta/systems');
+
+export const getBetaSubsystemBehavior = (systemId, downsample = 1) =>
+  api.get(`/beta/subsystem_behavior/${encodeURIComponent(systemId)}`, { params: { downsample } });
+
+export const getBetaAlertsSensorLevel = (params = {}) =>
+  api.get('/beta/alerts_sensor_level', { params });
+
+export const getBetaRiskDecompositionForEpisode = (startTs, endTs) =>
+  api.get('/beta/risk_decomposition/episode', { params: { start_ts: startTs, end_ts: endTs } });
+
 export default api;

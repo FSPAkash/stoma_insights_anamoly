@@ -1,0 +1,6 @@
+Subsystem,Sensors,Score_Mean,Thresh_Mean,High%,High_Count,Low_Count,Confidence,Baseline_σ,Alarms
+ISOLATED,0/13,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A
+SYS_1,8/8,0.0904,0.1994,3.4%,336,9577,0.6838,0.035799,389
+SYS_2,12/12,0.0132,0.0501,0.6%,64,9849,0.6815,0.012215,0
+SYS_3,4/4,0.0060,0.0181,0.6%,64,9849,0.6843,0.003994,78
+SYS_4,0/2,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A

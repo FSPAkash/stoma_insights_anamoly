@@ -2,17 +2,23 @@ import React, { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import LoginPage from './components/LoginPage';
 import Dashboard from './components/Dashboard';
+import DashboardBeta from './components/DashboardBeta';
 
 function App() {
   const [user, setUser] = useState(null);
+  const [mode, setMode] = useState('stable'); // 'stable' or 'beta'
 
-  const handleLogin = useCallback((username) => {
+  const handleLogin = useCallback((username, loginMode) => {
     setUser(username);
+    setMode(loginMode || 'stable');
   }, []);
 
   const handleLogout = useCallback(() => {
     setUser(null);
+    setMode('stable');
   }, []);
+
+  const DashboardComponent = mode === 'beta' ? DashboardBeta : Dashboard;
 
   return (
     <AnimatePresence mode="wait">
@@ -28,13 +34,13 @@ function App() {
         </motion.div>
       ) : (
         <motion.div
-          key="dashboard"
+          key={`dashboard-${mode}`}
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -10 }}
           transition={{ duration: 0.5 }}
         >
-          <Dashboard user={user} onLogout={handleLogout} />
+          <DashboardComponent user={user} onLogout={handleLogout} isBeta={mode === 'beta'} />
         </motion.div>
       )}
     </AnimatePresence>

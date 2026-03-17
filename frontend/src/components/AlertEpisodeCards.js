@@ -369,7 +369,6 @@ function AlertEpisodeCards({ alerts, onSelectAlert, selectedDay }) {
                     onClick={() => onSelectAlert(alert)}
                     layout
                   >
-                    <div style={styles.severityStripe(alert.severity)} />
 
                     <div style={styles.cardHeaderRow}>
                       <div style={{ display: 'flex', gap: '6px' }}>

@@ -33,7 +33,14 @@
       "Bash(grep -v \"^$\")",
       "Bash(for f:*)",
       "Bash(do cp:*)",
-      "Bash(curl -s \"http://localhost:5000/api/systems/SYS_1/sensors?downsample=1\")"
+      "Bash(curl -s \"http://localhost:5000/api/systems/SYS_1/sensors?downsample=1\")",
+      "Bash(python -c \"import pandas as pd; df = pd.read_excel\\(r''c:\\\\Users\\\\AkashPatil\\\\Anamoly\\\\backend\\\\new_plan.xlsx'', sheet_name=None\\); [print\\(f''=== Sheet: {name} ===\\\\n{sheet.to_string\\(\\)}\\\\n''\\) for name, sheet in df.items\\(\\)]\")",
+      "Bash(python -c \"import sys, io; sys.stdout = io.TextIOWrapper\\(sys.stdout.buffer, encoding=''utf-8''\\); import pandas as pd; df = pd.read_excel\\(r''c:\\\\Users\\\\AkashPatil\\\\Anamoly\\\\backend\\\\new_plan.xlsx'', sheet_name=None\\); [print\\(f''=== Sheet: {name} ===\\\\n{sheet.to_string\\(\\)}\\\\n''\\) for name, sheet in df.items\\(\\)]\")",
+      "Bash(npm run:*)",
+      "Bash(ls c:/Users/AkashPatil/Anamoly/backend/data_beta/*.csv)",
+      "Bash(xargs -I{} basename {})",
+      "Bash(ls c:/Users/AkashPatil/Anamoly/backend/data_beta/sensor_values* c:/Users/AkashPatil/Anamoly/backend/data_beta/df_chart*)",
+      "Bash(ls c:/Users/AkashPatil/Anamoly/backend/data_beta/scores*)"
     ]
   }
 }
