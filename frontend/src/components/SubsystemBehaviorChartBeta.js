@@ -60,7 +60,7 @@ const CustomTooltip = ({ active, payload, downtimeBands, alarmBands }) => {
   if (!active || !payload || !payload.length) return null;
   const row = payload[0]?.payload;
   const rawTs = row?.fullTs || row?.ts || '';
-  const displayTs = rawTs ? String(rawTs).replace(/\+00:00$/, ' UTC').substring(0, 21) : '';
+  const displayTs = rawTs ? String(rawTs).replace(/\+00:00$/, ' UTC').substring(0, 23) : '';
   const idx = row?._idx;
   const inDowntime = idx != null && downtimeBands.some((b) => idx >= b.start && idx <= b.end);
   const matchedAlarm = idx != null ? alarmBands.find((b) => idx >= b.start && idx <= b.end) : null;
@@ -108,7 +108,7 @@ const CustomTooltip = ({ active, payload, downtimeBands, alarmBands }) => {
   );
 };
 
-function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick }) {
+function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, isLatestMode, lastNHours, startTime, endTime }) {
   const [subsystems, setSubsystems] = useState([]);
   const [selectedSystem, setSelectedSystem] = useState(null);
   const [sensorData, setSensorData] = useState(null);
@@ -118,7 +118,7 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick }) {
 
   useEffect(() => {
     getBetaSubsystems().then(res => {
-      const subs = res.data.subsystems || [];
+      const subs = (res.data.subsystems || []).filter(s => s.system_id !== 'ISOLATED');
       setSubsystems(subs);
       if (subs.length > 0 && !selectedSystem) setSelectedSystem(subs[0].system_id);
     }).catch(() => {});
@@ -155,12 +155,34 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick }) {
   const chartData = useMemo(() => {
     if (!sensorData?.timeseries?.length) return [];
     const tsCol = sensorData.timestamp_col;
-    return sensorData.timeseries.map((row, i) => ({
+    let rows = sensorData.timeseries;
+
+    if (selectedDay) {
+      rows = rows.filter((row) => {
+        const ts = row[tsCol];
+        return ts && String(ts).substring(0, 10) === selectedDay;
+      });
+      if (isLatestMode && lastNHours < 24 && rows.length > 0) {
+        const lastTs = rows[rows.length - 1][tsCol];
+        if (lastTs) {
+          const end = new Date(String(lastTs));
+          const start = new Date(end.getTime() - lastNHours * 60 * 60 * 1000);
+          rows = rows.filter((row) => new Date(String(row[tsCol])) >= start);
+        }
+      } else if (!isLatestMode) {
+        rows = rows.filter((row) => {
+          const hhmm = String(row[tsCol]).substring(11, 16);
+          return hhmm >= startTime && hhmm <= endTime;
+        });
+      }
+    }
+
+    return rows.map((row, i) => ({
       ...row, _idx: i,
       ts: row[tsCol] ? String(row[tsCol]).substring(11, 16) : '',
       fullTs: row[tsCol] || '',
     }));
-  }, [sensorData]);
+  }, [sensorData, selectedDay, isLatestMode, lastNHours, startTime, endTime]);
 
   const findClosestIdx = useCallback((targetTs, data) => {
     if (!data.length) return null;
@@ -175,21 +197,33 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick }) {
 
   const downtimeBands = useMemo(() => {
     if (!sensorData?.downtime_bands?.length || !chartData.length) return [];
+    const dayFilter = selectedDay || '';
     return sensorData.downtime_bands
+      .filter((b) => {
+        if (!dayFilter) return true;
+        return String(b.start).substring(0, 10) === dayFilter;
+      })
       .map((b) => ({ start: findClosestIdx(b.start, chartData), end: findClosestIdx(b.end, chartData) }))
       .filter((b) => b.start !== null && b.end !== null);
-  }, [sensorData, chartData, findClosestIdx]);
+  }, [sensorData, chartData, selectedDay, findClosestIdx]);
 
   const alarmBands = useMemo(() => {
     if (!sensorData?.alarm_bands?.length || !chartData.length) return [];
+    const dayFilter = selectedDay || '';
     return sensorData.alarm_bands
+      .filter((b) => {
+        if (!dayFilter) return true;
+        const bStart = String(b.start).substring(0, 10);
+        const bEnd = String(b.end).substring(0, 10);
+        return bStart === dayFilter || bEnd === dayFilter;
+      })
       .map((b) => ({
         start: findClosestIdx(b.start, chartData),
         end: findClosestIdx(b.end, chartData),
         severity: b.severity,
       }))
       .filter((b) => b.start !== null && b.end !== null);
-  }, [sensorData, chartData, findClosestIdx]);
+  }, [sensorData, chartData, selectedDay, findClosestIdx]);
 
   const sensors = sensorData?.sensors || [];
 

@@ -82,7 +82,7 @@ const CustomTooltip = ({ active, payload, downtimeBands }) => {
   if (!active || !payload || !payload.length) return null;
   const row = payload[0]?.payload;
   const rawTs = row?.fullTs || row?.ts || '';
-  const displayTs = rawTs ? String(rawTs).replace(/\+00:00$/, ' UTC').substring(0, 21) : '';
+  const displayTs = rawTs ? String(rawTs).replace(/\+00:00$/, ' UTC').substring(0, 23) : '';
   const idx = row?._idx;
   const inDowntime = idx != null && downtimeBands.some((b) => idx >= b.start && idx <= b.end);
 
@@ -116,7 +116,7 @@ const CustomTooltip = ({ active, payload, downtimeBands }) => {
   );
 };
 
-function SensorQualityGrid({ filterLabel, onFilterClick }) {
+function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMode, lastNHours, startTime, endTime }) {
   const [subsystems, setSubsystems] = useState([]);
   const [selectedSystem, setSelectedSystem] = useState(null);
   const [qualityData, setQualityData] = useState(null);
@@ -162,31 +162,56 @@ function SensorQualityGrid({ filterLabel, onFilterClick }) {
     });
   };
 
+  const applyTimeFilter = useCallback((rows, tsKey = 'ts') => {
+    if (!selectedDay || !rows.length) return rows;
+    let filtered = rows.filter((row) => {
+      const ts = row[tsKey];
+      return ts && String(ts).substring(0, 10) === selectedDay;
+    });
+    if (isLatestMode && lastNHours < 24 && filtered.length > 0) {
+      const lastTs = filtered[filtered.length - 1][tsKey];
+      if (lastTs) {
+        const end = new Date(String(lastTs));
+        const start = new Date(end.getTime() - lastNHours * 60 * 60 * 1000);
+        filtered = filtered.filter((row) => new Date(String(row[tsKey])) >= start);
+      }
+    } else if (!isLatestMode) {
+      filtered = filtered.filter((row) => {
+        const hhmm = String(row[tsKey]).substring(11, 16);
+        return hhmm >= startTime && hhmm <= endTime;
+      });
+    }
+    return filtered;
+  }, [selectedDay, isLatestMode, lastNHours, startTime, endTime]);
+
   // Subsystem-level chart data
   const subsystemChartData = useMemo(() => {
     if (!qualityData?.subsystem_timeseries?.length) return [];
-    return qualityData.subsystem_timeseries.map((row, i) => ({
+    const filtered = applyTimeFilter(qualityData.subsystem_timeseries);
+    return filtered.map((row, i) => ({
       ...row, _idx: i,
-      fullTs: row.ts ? String(row.ts).substring(0, 19).replace('T', ' ') : '',
+      fullTs: row.ts ? String(row.ts) : '',
       ts: row.ts ? String(row.ts).substring(11, 16) : '',
     }));
-  }, [qualityData]);
+  }, [qualityData, applyTimeFilter]);
 
   // Sensor-level chart data
   const sensorChartData = useMemo(() => {
     if (!qualityData?.timeseries?.length) return [];
-    return qualityData.timeseries.map((row, i) => ({
+    const filtered = applyTimeFilter(qualityData.timeseries);
+    return filtered.map((row, i) => ({
       ...row, _idx: i,
-      fullTs: row.ts ? String(row.ts).substring(0, 19).replace('T', ' ') : '',
+      fullTs: row.ts ? String(row.ts) : '',
       ts: row.ts ? String(row.ts).substring(11, 16) : '',
     }));
-  }, [qualityData]);
+  }, [qualityData, applyTimeFilter]);
 
   const chartData = viewMode === 'subsystem' ? subsystemChartData : sensorChartData;
 
   // Downtime bands from API
   const downtimeBands = useMemo(() => {
     if (!qualityData?.downtime_bands?.length || !chartData.length) return [];
+    const dayFilter = selectedDay || '';
     const findIdx = (targetTs) => {
       if (!chartData.length) return null;
       const target = new Date(targetTs).getTime();
@@ -198,9 +223,13 @@ function SensorQualityGrid({ filterLabel, onFilterClick }) {
       return chartData[best]._idx;
     };
     return qualityData.downtime_bands
+      .filter((b) => {
+        if (!dayFilter) return true;
+        return String(b.start).substring(0, 10) === dayFilter;
+      })
       .map((b) => ({ start: findIdx(b.start), end: findIdx(b.end) }))
       .filter((b) => b.start !== null && b.end !== null);
-  }, [qualityData, chartData]);
+  }, [qualityData, chartData, selectedDay]);
 
   // Inline downtime fallback
   const inlineDowntimeBands = useMemo(() => {
@@ -378,7 +407,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick }) {
             )}
 
             <ResponsiveContainer width="100%" height={320}>
-              <LineChart data={chartData} margin={{ top: 10, right: 20, bottom: 5, left: 0 }} style={{ cursor: 'crosshair' }}>
+              <LineChart data={chartData} margin={{ top: 10, right: (viewMode === 'sensor' && activeMetric === 'sqs') ? 50 : 20, bottom: 5, left: 0 }} style={{ cursor: 'crosshair' }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,230,200,0.4)" />
                 <XAxis
                   dataKey="_idx" type="number" domain={['dataMin', 'dataMax']}
@@ -394,7 +423,10 @@ function SensorQualityGrid({ filterLabel, onFilterClick }) {
                     return row.ts;
                   }}
                 />
-                <YAxis domain={yDomain} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false} />
+                <YAxis yAxisId="left" domain={yDomain} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false} />
+                {viewMode === 'sensor' && activeMetric === 'sqs' && (
+                  <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tick={{ fontSize: 10, fill: '#1976D2' }} tickLine={false} />
+                )}
                 <Tooltip content={<CustomTooltip downtimeBands={allDowntimeBands} />} />
 
                 {/* Downtime bands - prominent solid gray */}
@@ -402,6 +434,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick }) {
                   <ReferenceArea
                     key={`dt-${i}`}
                     x1={band.start} x2={band.end}
+                    yAxisId="left"
                     fill="rgba(120,120,120,0.28)"
                     fillOpacity={1}
                     stroke="rgba(80,80,80,0.6)"
@@ -414,6 +447,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick }) {
                 {viewMode === 'subsystem' && (
                   <>
                     <Line
+                      yAxisId="left"
                       type="monotone"
                       dataKey="system_score"
                       stroke="#1B5E20"
@@ -424,6 +458,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick }) {
                       connectNulls={false}
                     />
                     <Line
+                      yAxisId="left"
                       type="monotone"
                       dataKey="adaptive_threshold"
                       stroke="#E65100"
@@ -442,6 +477,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick }) {
                   visibleSensors[s] ? (
                     <Line
                       key={s}
+                      yAxisId={activeMetric === 'sqs' ? 'right' : 'left'}
                       type="monotone"
                       dataKey={`${s}__${activeMetric}`}
                       stroke={SENSOR_PALETTE[i % SENSOR_PALETTE.length]}

@@ -4,14 +4,12 @@ import TopBarBeta from './TopBarBeta';
 import BetaOverviewCards from './BetaOverviewCards';
 import SensorQualityGrid from './SensorQualityGrid';
 import SubsystemBehaviorChartBeta from './SubsystemBehaviorChartBeta';
-import NormalBehaviorPanel from './NormalBehaviorPanel';
 import FeedbackWidget from './FeedbackWidget';
 import TimeFilter from './TimeFilter';
 import useTimeFilter from '../hooks/useTimeFilter';
 import {
   getBetaDashboardSummary,
   getBetaScoresTimeseries,
-  getBetaNormalPeriods,
 } from '../utils/api';
 
 const AuroraBg = () => (
@@ -86,7 +84,6 @@ function DashboardBeta({ user, onLogout }) {
   const [summary, setSummary] = useState(null);
   const [timeseries, setTimeseries] = useState([]);
   const [timestampCol, setTimestampCol] = useState('timestamp_utc');
-  const [normalData, setNormalData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -98,10 +95,9 @@ function DashboardBeta({ user, onLogout }) {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [summaryRes, tsRes, normalRes] = await Promise.allSettled([
+      const [summaryRes, tsRes] = await Promise.allSettled([
         getBetaDashboardSummary(),
         getBetaScoresTimeseries(1),
-        getBetaNormalPeriods(),
       ]);
 
       if (summaryRes.status === 'fulfilled') setSummary(summaryRes.value.data);
@@ -110,7 +106,6 @@ function DashboardBeta({ user, onLogout }) {
         setTimeseries(tsData.timeseries || []);
         setTimestampCol(tsData.timestamp_col || 'timestamp_utc');
       }
-      if (normalRes.status === 'fulfilled') setNormalData(normalRes.value.data);
 
       setLastUpdated(new Date());
     } catch (err) {
@@ -164,6 +159,11 @@ function DashboardBeta({ user, onLogout }) {
                 <SensorQualityGrid
                   filterLabel={timeFilter.filterLabel}
                   onFilterClick={() => setFilterOpen(true)}
+                  selectedDay={timeFilter.selectedDay}
+                  isLatestMode={timeFilter.isLatestMode}
+                  lastNHours={timeFilter.lastNHours}
+                  startTime={timeFilter.startTime}
+                  endTime={timeFilter.endTime}
                 />
               </div>
 
@@ -174,17 +174,14 @@ function DashboardBeta({ user, onLogout }) {
                 <SubsystemBehaviorChartBeta
                   filterLabel={timeFilter.filterLabel}
                   onFilterClick={() => setFilterOpen(true)}
+                  selectedDay={timeFilter.selectedDay}
+                  isLatestMode={timeFilter.isLatestMode}
+                  lastNHours={timeFilter.lastNHours}
+                  startTime={timeFilter.startTime}
+                  endTime={timeFilter.endTime}
                 />
               </div>
 
-              {/* Filtered Results */}
-              <div style={styles.sectionDivider} />
-              <div style={styles.sectionWrap}>
-                <div style={styles.sectionLabel}>
-                  Filtered Results: {timeFilter.filterLabel || 'All Data'}
-                </div>
-
-              </div>
             </>
           )}
         </div>
