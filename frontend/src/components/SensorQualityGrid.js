@@ -21,10 +21,11 @@ const SENSOR_PALETTE = [
 ];
 
 const METRIC_SUFFIXES = [
-  { key: 'sqs', label: 'SQS', color: '#1976D2' },
   { key: 'a', label: 'Engine A', color: '#E65100' },
   { key: 'b', label: 'Engine B', color: '#7B1FA2' },
 ];
+
+const SQS_COLOR = '#1976D2';
 
 const styles = {
   heading: {
@@ -101,30 +102,53 @@ const CustomTooltip = ({ active, payload, downtimeBands }) => {
         }}>DOWNTIME</div>
       )}
       <div style={{ fontWeight: 600, color: '#1B5E20', marginBottom: '6px' }}>{displayTs}</div>
-      {payload.map((p, i) => (
-        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', marginBottom: '2px' }}>
-          <span style={{ color: p.color, display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: p.color, display: 'inline-block' }} />
-            {p.name}
-          </span>
-          <span style={{ fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
-            {p.value !== null && p.value !== undefined ? Number(p.value).toFixed(3) : '--'}
-          </span>
+      {payload.map((p, i) => {
+        const isSqs = p.dataKey === '_avgSqsPct';
+        return (
+          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', marginBottom: '2px' }}>
+            <span style={{ color: p.color, display: 'flex', alignItems: 'center', gap: '4px', fontWeight: isSqs ? 600 : 400 }}>
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: p.color, display: 'inline-block' }} />
+              {p.name}
+            </span>
+            <span style={{ fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
+              {p.value !== null && p.value !== undefined
+                ? (isSqs ? `${Number(p.value).toFixed(1)}%` : Number(p.value).toFixed(3))
+                : '--'}
+            </span>
+          </div>
+        );
+      })}
+      {row?._sqsDegraded?.length > 0 && (
+        <div style={{
+          marginTop: '6px', paddingTop: '6px', borderTop: '1px solid rgba(27,94,32,0.12)',
+        }}>
+          <div style={{ fontSize: '9.5px', fontWeight: 700, color: '#BF360C', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
+            Degraded SQS
+          </div>
+          {row._sqsDegraded.map((d, i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginBottom: '1px', fontSize: '10.5px' }}>
+              <span style={{ color: '#6B736B' }}>{formatSensorName(d.sensor)}</span>
+              <span style={{ fontWeight: 600, color: '#BF360C', fontVariantNumeric: 'tabular-nums' }}>{(d.sqs * 100).toFixed(0)}%</span>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
     </div>
   );
 };
 
-function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMode, lastNHours, startTime, endTime }) {
+function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMode, lastNHours, startTime, endTime, onZoomChange, onZoomReset, isZoomed }) {
   const [subsystems, setSubsystems] = useState([]);
   const [selectedSystem, setSelectedSystem] = useState(null);
   const [qualityData, setQualityData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [visibleSensors, setVisibleSensors] = useState({});
-  const [activeMetric, setActiveMetric] = useState('sqs');
+  const [activeMetric, setActiveMetric] = useState('a');
   const [viewMode, setViewMode] = useState('subsystem'); // 'subsystem' or 'sensor'
-  const [tickInterval, setTickInterval] = useState('auto');
+
+
+  const [refAreaLeft, setRefAreaLeft] = useState(null);
+  const [refAreaRight, setRefAreaRight] = useState(null);
 
   useEffect(() => {
     getBetaSubsystems().then(res => {
@@ -199,11 +223,25 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
   const sensorChartData = useMemo(() => {
     if (!qualityData?.timeseries?.length) return [];
     const filtered = applyTimeFilter(qualityData.timeseries);
-    return filtered.map((row, i) => ({
-      ...row, _idx: i,
-      fullTs: row.ts ? String(row.ts) : '',
-      ts: row.ts ? String(row.ts).substring(11, 16) : '',
-    }));
+    const allSensors = qualityData.sensors || [];
+    return filtered.map((row, i) => {
+      // Compute average SQS across all sensors (not just visible) as percentage
+      // Treat missing/null SQS as 0 (signal quality drops to 0 during downtime)
+      const sqsVals = allSensors.map((s) => {
+        const v = row[`${s}__sqs`];
+        return (v != null && isFinite(v)) ? v : 0;
+      });
+      const avgSqsPct = sqsVals.length ? (sqsVals.reduce((a, b) => a + b, 0) / sqsVals.length) * 100 : null;
+      // Track sensors with degraded SQS (not null and < 1)
+      const sqsDegraded = allSensors
+        .filter((s) => { const v = row[`${s}__sqs`]; return v != null && isFinite(v) && v < 1; })
+        .map((s) => ({ sensor: s, sqs: row[`${s}__sqs`] }));
+      return {
+        ...row, _idx: i, _avgSqsPct: avgSqsPct, _sqsDegraded: sqsDegraded,
+        fullTs: row.ts ? String(row.ts) : '',
+        ts: row.ts ? String(row.ts).substring(11, 16) : '',
+      };
+    });
   }, [qualityData, applyTimeFilter]);
 
   const chartData = viewMode === 'subsystem' ? subsystemChartData : sensorChartData;
@@ -249,7 +287,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
 
   const sensors = qualityData?.sensors || [];
 
-  // Y-domain for sensor view
+  // Y-domain for sensor view (Engine A/B only, SQS is shown as heatstrip)
   const sensorYDomain = useMemo(() => {
     if (viewMode !== 'sensor' || !chartData.length || !sensors.length) return ['auto', 'auto'];
     const activeSensors = sensors.filter((s) => visibleSensors[s]);
@@ -291,18 +329,45 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
 
   const yDomain = viewMode === 'subsystem' ? subsystemYDomain : sensorYDomain;
 
+  // Auto-derive tick interval from visible data density
   const xTicks = useMemo(() => {
-    if (tickInterval === 'auto' || !chartData.length) return undefined;
+    if (!chartData.length) return undefined;
+    const n = chartData.length;
     const seen = new Set();
     const ticks = [];
+    const granularity = n <= 60 ? 'minute' : 'hour';
     for (const row of chartData) {
       const ts = row.fullTs || '';
       if (!ts) continue;
-      const key = tickInterval === 'minute' ? ts.substring(11, 16) : ts.substring(11, 13);
+      const key = granularity === 'minute' ? ts.substring(11, 16) : ts.substring(11, 13);
       if (!seen.has(key)) { seen.add(key); ticks.push(row._idx); }
     }
     return ticks;
-  }, [chartData, tickInterval]);
+  }, [chartData]);
+
+  const handleZoomMouseDown = useCallback((e) => {
+    if (e?.activeLabel != null) setRefAreaLeft(e.activeLabel);
+  }, []);
+
+  const handleZoomMouseMove = useCallback((e) => {
+    if (refAreaLeft != null && e?.activeLabel != null) setRefAreaRight(e.activeLabel);
+  }, [refAreaLeft]);
+
+  const handleZoomMouseUp = useCallback(() => {
+    if (refAreaLeft != null && refAreaRight != null && refAreaLeft !== refAreaRight) {
+      const left = Math.min(refAreaLeft, refAreaRight);
+      const right = Math.max(refAreaLeft, refAreaRight);
+      if (onZoomChange) {
+        const leftRow = chartData.find((r) => r._idx === left) || chartData[left];
+        const rightRow = chartData.find((r) => r._idx === right) || chartData[right];
+        if (leftRow?.fullTs && rightRow?.fullTs) {
+          onZoomChange({ start: leftRow.fullTs, end: rightRow.fullTs });
+        }
+      }
+    }
+    setRefAreaLeft(null);
+    setRefAreaRight(null);
+  }, [refAreaLeft, refAreaRight, onZoomChange, chartData]);
 
   const hasSubsystemData = subsystemChartData.length > 0;
   const hasSensorData = sensorChartData.length > 0;
@@ -340,6 +405,9 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
       {/* Metric toggle - only in sensor view */}
       {viewMode === 'sensor' && (
         <div style={styles.metricToggle}>
+          <div style={{ ...styles.metricBtn(true, SQS_COLOR), cursor: 'default' }}>
+            SQS % (right axis)
+          </div>
           {METRIC_SUFFIXES.map(m => (
             <div key={m.key} style={styles.metricBtn(activeMetric === m.key, m.color)}
               onClick={() => setActiveMetric(m.key)}>
@@ -385,6 +453,10 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
                   <div style={{ width: '14px', height: '8px', background: '#9E9E9E', borderRadius: '2px', border: '1px solid #757575', opacity: 0.7 }} />
                   <span style={{ fontWeight: 600 }}>Downtime</span>
                 </div>
+                <div style={{ ...styles.legendItem, cursor: 'default', marginLeft: '4px' }}>
+                  <div style={{ width: '14px', height: '3px', background: SQS_COLOR, borderRadius: '2px' }} />
+                  <span style={{ fontWeight: 600 }}>Avg SQS %</span>
+                </div>
               </div>
             )}
 
@@ -406,26 +478,57 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
               </div>
             )}
 
-            <ResponsiveContainer width="100%" height={320}>
-              <LineChart data={chartData} margin={{ top: 10, right: (viewMode === 'sensor' && activeMetric === 'sqs') ? 50 : 20, bottom: 5, left: 0 }} style={{ cursor: 'crosshair' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+              <div style={{
+                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                fontSize: '10px', padding: '4px 12px', borderRadius: '20px',
+                border: '1px solid rgba(203,230,200,0.6)', background: 'rgba(255,255,255,0.6)',
+                color: '#8A928A', fontWeight: 500,
+              }}>
+                Drag to zoom
+              </div>
+              {isZoomed && onZoomReset && (
+                <div onClick={onZoomReset} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '6px',
+                  fontSize: '10px', padding: '4px 12px', borderRadius: '20px', cursor: 'pointer',
+                  border: '1.5px solid rgba(27,94,32,0.4)', background: 'rgba(27,94,32,0.06)',
+                  color: '#1B5E20', fontWeight: 600, transition: 'all 0.2s',
+                }}>
+                  <span>Reset zoom</span>
+                  <span style={{ fontSize: '12px', opacity: 0.6 }}>x</span>
+                </div>
+              )}
+            </div>
+            <ResponsiveContainer width="100%" height={340}>
+              <LineChart
+                data={chartData}
+                margin={{ top: 10, right: viewMode === 'sensor' ? 50 : 20, bottom: 5, left: 0 }}
+                style={{ cursor: 'crosshair' }}
+                onMouseDown={handleZoomMouseDown}
+                onMouseMove={handleZoomMouseMove}
+                onMouseUp={handleZoomMouseUp}
+              >
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,230,200,0.4)" />
                 <XAxis
                   dataKey="_idx" type="number" domain={['dataMin', 'dataMax']}
                   ticks={xTicks} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false}
                   label={{ value: 'UTC', position: 'insideBottomRight', offset: -2, style: { fontSize: 9, fill: '#8A928A' } }}
                   tickFormatter={(idx) => {
-                    const row = chartData[idx] || chartData.find((r) => r._idx === idx);
+                    const row = chartData.find((r) => r._idx === idx) || chartData[idx];
                     if (!row) return '';
-                    if (tickInterval === 'hour') {
-                      const h = String(row.fullTs || '').substring(11, 13);
-                      return h ? h + ':00' : row.ts;
-                    }
                     return row.ts;
                   }}
                 />
                 <YAxis yAxisId="left" domain={yDomain} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false} />
-                {viewMode === 'sensor' && activeMetric === 'sqs' && (
-                  <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tick={{ fontSize: 10, fill: '#1976D2' }} tickLine={false} />
+                {viewMode === 'sensor' && (
+                  <YAxis
+                    yAxisId="right" orientation="right"
+                    domain={[0, 100]}
+                    tick={{ fontSize: 10, fill: SQS_COLOR }}
+                    tickLine={false}
+                    tickFormatter={(v) => `${v}%`}
+                    label={{ value: 'SQS %', angle: 90, position: 'insideRight', offset: 10, style: { fontSize: 9, fill: SQS_COLOR } }}
+                  />
                 )}
                 <Tooltip content={<CustomTooltip downtimeBands={allDowntimeBands} />} />
 
@@ -472,12 +575,33 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
                   </>
                 )}
 
-                {/* Sensor view: per-sensor lines for active metric */}
+                {/* Sensor view: always-on Avg SQS % line on right axis */}
+                {viewMode === 'sensor' && (
+                  <Line
+                    yAxisId="right"
+                    type="monotone"
+                    dataKey="_avgSqsPct"
+                    stroke={SQS_COLOR}
+                    strokeWidth={2}
+                    dot={(props) => {
+                      const { cx, cy, payload } = props;
+                      if (!payload?._sqsDegraded?.length) return null;
+                      return (
+                        <circle cx={cx} cy={cy} r={4} fill="#BF360C" stroke="#fff" strokeWidth={1.5} />
+                      );
+                    }}
+                    name="Avg SQS"
+                    animationDuration={600}
+                    connectNulls
+                  />
+                )}
+
+                {/* Sensor view: per-sensor lines for active engine metric */}
                 {viewMode === 'sensor' && sensors.map((s, i) =>
                   visibleSensors[s] ? (
                     <Line
                       key={s}
-                      yAxisId={activeMetric === 'sqs' ? 'right' : 'left'}
+                      yAxisId="left"
                       type="monotone"
                       dataKey={`${s}__${activeMetric}`}
                       stroke={SENSOR_PALETTE[i % SENSOR_PALETTE.length]}
@@ -489,25 +613,21 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
                     />
                   ) : null
                 )}
+
+                {/* Drag selection highlight */}
+                {refAreaLeft != null && refAreaRight != null && (
+                  <ReferenceArea
+                    yAxisId="left"
+                    x1={refAreaLeft} x2={refAreaRight}
+                    strokeOpacity={0.3}
+                    fill="rgba(27,94,32,0.15)"
+                  />
+                )}
               </LineChart>
             </ResponsiveContainer>
 
-            {/* X-axis interval toggle */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px', justifyContent: 'center' }}>
-              <span style={{ fontSize: '10px', color: '#8A928A', marginRight: '4px' }}>X-axis</span>
-              {['auto', 'minute', 'hour'].map((mode) => (
-                <div key={mode} onClick={() => setTickInterval(mode)} style={{
-                  fontSize: '10px', padding: '2px 8px', borderRadius: '10px', cursor: 'pointer',
-                  fontWeight: tickInterval === mode ? 600 : 400,
-                  color: tickInterval === mode ? '#1B5E20' : '#8A928A',
-                  background: tickInterval === mode ? 'rgba(27,94,32,0.08)' : 'transparent',
-                  border: tickInterval === mode ? '1px solid rgba(27,94,32,0.2)' : '1px solid transparent',
-                  transition: 'all 0.2s',
-                }}>
-                  {mode === 'auto' ? 'Auto' : mode === 'minute' ? '1 min' : '1 hr'}
-                </div>
-              ))}
-            </div>
+
+
           </>
         )}
       </div>

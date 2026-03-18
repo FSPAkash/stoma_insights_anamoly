@@ -40,7 +40,9 @@
       "Bash(ls c:/Users/AkashPatil/Anamoly/backend/data_beta/*.csv)",
       "Bash(xargs -I{} basename {})",
       "Bash(ls c:/Users/AkashPatil/Anamoly/backend/data_beta/sensor_values* c:/Users/AkashPatil/Anamoly/backend/data_beta/df_chart*)",
-      "Bash(ls c:/Users/AkashPatil/Anamoly/backend/data_beta/scores*)"
+      "Bash(ls c:/Users/AkashPatil/Anamoly/backend/data_beta/scores*)",
+      "Bash(sed -n '8p')",
+      "Read(//c/Users/AkashPatil/Anamoly/backend/data_beta/**)"
     ]
   }
 }

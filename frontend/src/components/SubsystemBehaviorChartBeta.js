@@ -108,13 +108,14 @@ const CustomTooltip = ({ active, payload, downtimeBands, alarmBands }) => {
   );
 };
 
-function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, isLatestMode, lastNHours, startTime, endTime }) {
+function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, isLatestMode, lastNHours, startTime, endTime, onZoomChange, onZoomReset, isZoomed }) {
   const [subsystems, setSubsystems] = useState([]);
   const [selectedSystem, setSelectedSystem] = useState(null);
   const [sensorData, setSensorData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [visibleSensors, setVisibleSensors] = useState({});
-  const [tickInterval, setTickInterval] = useState('auto');
+  const [refAreaLeft, setRefAreaLeft] = useState(null);
+  const [refAreaRight, setRefAreaRight] = useState(null);
 
   useEffect(() => {
     getBetaSubsystems().then(res => {
@@ -248,17 +249,43 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
   }, [chartData, sensors, visibleSensors]);
 
   const xTicks = useMemo(() => {
-    if (tickInterval === 'auto' || !chartData.length) return undefined;
+    if (!chartData.length) return undefined;
+    const n = chartData.length;
     const seen = new Set();
     const ticks = [];
+    const granularity = n <= 60 ? 'minute' : 'hour';
     for (const row of chartData) {
       const ts = row.fullTs ? String(row.fullTs) : '';
       if (!ts) continue;
-      const key = tickInterval === 'minute' ? ts.substring(11, 16) : ts.substring(11, 13);
+      const key = granularity === 'minute' ? ts.substring(11, 16) : ts.substring(11, 13);
       if (!seen.has(key)) { seen.add(key); ticks.push(row._idx); }
     }
     return ticks;
-  }, [chartData, tickInterval]);
+  }, [chartData]);
+
+  const handleZoomMouseDown = useCallback((e) => {
+    if (e?.activeLabel != null) setRefAreaLeft(e.activeLabel);
+  }, []);
+
+  const handleZoomMouseMove = useCallback((e) => {
+    if (refAreaLeft != null && e?.activeLabel != null) setRefAreaRight(e.activeLabel);
+  }, [refAreaLeft]);
+
+  const handleZoomMouseUp = useCallback(() => {
+    if (refAreaLeft != null && refAreaRight != null && refAreaLeft !== refAreaRight) {
+      const left = Math.min(refAreaLeft, refAreaRight);
+      const right = Math.max(refAreaLeft, refAreaRight);
+      if (onZoomChange) {
+        const leftRow = chartData.find((r) => r._idx === left) || chartData[left];
+        const rightRow = chartData.find((r) => r._idx === right) || chartData[right];
+        if (leftRow?.fullTs && rightRow?.fullTs) {
+          onZoomChange({ start: leftRow.fullTs, end: rightRow.fullTs });
+        }
+      }
+    }
+    setRefAreaLeft(null);
+    setRefAreaRight(null);
+  }, [refAreaLeft, refAreaRight, onZoomChange, chartData]);
 
   return (
     <GlassCard delay={0.5} style={{ marginTop: '8px' }} intensity="strong">
@@ -319,20 +346,44 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
               )}
             </div>
 
-            <ResponsiveContainer width="100%" height={320}>
-              <LineChart data={chartData} margin={{ top: 10, right: 20, bottom: 5, left: 0 }} style={{ cursor: 'crosshair' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+              <div style={{
+                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                fontSize: '10px', padding: '4px 12px', borderRadius: '20px',
+                border: '1px solid rgba(203,230,200,0.6)', background: 'rgba(255,255,255,0.6)',
+                color: '#8A928A', fontWeight: 500,
+              }}>
+                Drag to zoom
+              </div>
+              {isZoomed && onZoomReset && (
+                <div onClick={onZoomReset} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '6px',
+                  fontSize: '10px', padding: '4px 12px', borderRadius: '20px', cursor: 'pointer',
+                  border: '1.5px solid rgba(27,94,32,0.4)', background: 'rgba(27,94,32,0.06)',
+                  color: '#1B5E20', fontWeight: 600, transition: 'all 0.2s',
+                }}>
+                  <span>Reset zoom</span>
+                  <span style={{ fontSize: '12px', opacity: 0.6 }}>x</span>
+                </div>
+              )}
+            </div>
+            <ResponsiveContainer width="100%" height={340}>
+              <LineChart
+                data={chartData}
+                margin={{ top: 10, right: 20, bottom: 5, left: 0 }}
+                style={{ cursor: 'crosshair' }}
+                onMouseDown={handleZoomMouseDown}
+                onMouseMove={handleZoomMouseMove}
+                onMouseUp={handleZoomMouseUp}
+              >
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,230,200,0.4)" />
                 <XAxis
                   dataKey="_idx" type="number" domain={['dataMin', 'dataMax']}
                   ticks={xTicks} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false}
                   label={{ value: 'UTC', position: 'insideBottomRight', offset: -2, style: { fontSize: 9, fill: '#8A928A' } }}
                   tickFormatter={(idx) => {
-                    const row = chartData[idx] || chartData.find((r) => r._idx === idx);
+                    const row = chartData.find((r) => r._idx === idx) || chartData[idx];
                     if (!row) return '';
-                    if (tickInterval === 'hour') {
-                      const h = String(row.fullTs || '').substring(11, 13);
-                      return h ? h + ':00' : row.ts;
-                    }
                     return row.ts;
                   }}
                 />
@@ -380,25 +431,20 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
                     />
                   ) : null
                 )}
+
+                {/* Drag selection highlight */}
+                {refAreaLeft != null && refAreaRight != null && (
+                  <ReferenceArea
+                    x1={refAreaLeft} x2={refAreaRight}
+                    strokeOpacity={0.3}
+                    fill="rgba(27,94,32,0.15)"
+                  />
+                )}
               </LineChart>
             </ResponsiveContainer>
 
-            {/* X-axis interval toggle */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px', justifyContent: 'center' }}>
-              <span style={{ fontSize: '10px', color: '#8A928A', marginRight: '4px' }}>X-axis</span>
-              {['auto', 'minute', 'hour'].map((mode) => (
-                <div key={mode} onClick={() => setTickInterval(mode)} style={{
-                  fontSize: '10px', padding: '2px 8px', borderRadius: '10px', cursor: 'pointer',
-                  fontWeight: tickInterval === mode ? 600 : 400,
-                  color: tickInterval === mode ? '#1B5E20' : '#8A928A',
-                  background: tickInterval === mode ? 'rgba(27,94,32,0.08)' : 'transparent',
-                  border: tickInterval === mode ? '1px solid rgba(27,94,32,0.2)' : '1px solid transparent',
-                  transition: 'all 0.2s',
-                }}>
-                  {mode === 'auto' ? 'Auto' : mode === 'minute' ? '1 min' : '1 hr'}
-                </div>
-              ))}
-            </div>
+
+
           </>
         )}
       </div>

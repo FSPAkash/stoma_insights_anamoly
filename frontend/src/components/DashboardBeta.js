@@ -92,6 +92,44 @@ function DashboardBeta({ user, onLogout }) {
   const timeFilter = useTimeFilter(timeseries, timestampCol);
   const hasActiveFilter = !!(timeFilter.filterLabel && timeFilter.filterLabel !== 'all data');
 
+  // Snapshot of time filter state before a chart zoom, so we can restore on reset
+  const [preZoomState, setPreZoomState] = useState(null);
+
+  const handleChartZoom = useCallback((zoom) => {
+    if (!zoom) return;
+    // Save current time filter state only before the first zoom
+    if (!preZoomState) {
+      setPreZoomState({
+        selectedDay: timeFilter.selectedDay,
+        isLatestMode: timeFilter.isLatestMode,
+        lastNHours: timeFilter.lastNHours,
+        startTime: timeFilter.startTime,
+        endTime: timeFilter.endTime,
+      });
+    }
+    const startTs = String(zoom.start);
+    const endTs = String(zoom.end);
+    const day = startTs.substring(0, 10);
+    const startHhmm = startTs.substring(11, 16);
+    const endHhmm = endTs.substring(11, 16);
+    timeFilter.handleDayChange(day);
+    timeFilter.setStartTime(startHhmm);
+    timeFilter.setEndTime(endHhmm);
+  }, [timeFilter, preZoomState]);
+
+  const handleZoomReset = useCallback(() => {
+    if (!preZoomState) return;
+    if (preZoomState.isLatestMode) {
+      timeFilter.handleLatestClick();
+      timeFilter.setLastNHours(preZoomState.lastNHours);
+    } else {
+      timeFilter.handleDayChange(preZoomState.selectedDay);
+      timeFilter.setStartTime(preZoomState.startTime);
+      timeFilter.setEndTime(preZoomState.endTime);
+    }
+    setPreZoomState(null);
+  }, [preZoomState, timeFilter]);
+
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
@@ -164,6 +202,9 @@ function DashboardBeta({ user, onLogout }) {
                   lastNHours={timeFilter.lastNHours}
                   startTime={timeFilter.startTime}
                   endTime={timeFilter.endTime}
+                  onZoomChange={handleChartZoom}
+                  onZoomReset={handleZoomReset}
+                  isZoomed={!!preZoomState}
                 />
               </div>
 
@@ -179,6 +220,9 @@ function DashboardBeta({ user, onLogout }) {
                   lastNHours={timeFilter.lastNHours}
                   startTime={timeFilter.startTime}
                   endTime={timeFilter.endTime}
+                  onZoomChange={handleChartZoom}
+                  onZoomReset={handleZoomReset}
+                  isZoomed={!!preZoomState}
                 />
               </div>
 
