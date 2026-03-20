@@ -37,6 +37,12 @@ CORS(app)
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 BETA_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_beta")
 
+# In-memory CSV cache to avoid re-reading large files on every request
+_csv_cache = {}
+_csv_ts_cache = {}
+_beta_csv_cache = {}
+_beta_csv_ts_cache = {}
+
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "")  # e.g. "username/repo"
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
@@ -109,11 +115,14 @@ def find_timestamp_col(df):
 
 
 def load_csv(filename):
+    if filename in _csv_cache:
+        return _csv_cache[filename]
     path = os.path.join(DATA_DIR, filename)
     if not os.path.exists(path):
         return pd.DataFrame()
     try:
         df = pd.read_csv(path)
+        _csv_cache[filename] = df
         return df
     except Exception as e:
         print(f"Error loading {filename}: {e}")
@@ -121,6 +130,8 @@ def load_csv(filename):
 
 
 def load_csv_with_ts(filename):
+    if filename in _csv_ts_cache:
+        return _csv_ts_cache[filename]
     path = os.path.join(DATA_DIR, filename)
     if not os.path.exists(path):
         return pd.DataFrame(), None
@@ -162,6 +173,7 @@ def load_csv_with_ts(filename):
             except Exception:
                 pass
 
+        _csv_ts_cache[filename] = (df, ts_col)
         return df, ts_col
     except Exception as e:
         print(f"Error loading {filename}: {e}")
@@ -822,16 +834,22 @@ def submit_feedback():
 # =============================================================================
 
 def beta_load_csv(filename):
+    if filename in _beta_csv_cache:
+        return _beta_csv_cache[filename]
     path = os.path.join(BETA_DATA_DIR, filename)
     if os.path.exists(path):
         try:
-            return pd.read_csv(path)
+            df = pd.read_csv(path)
+            _beta_csv_cache[filename] = df
+            return df
         except Exception as e:
             print(f"Error loading beta {filename}: {e}")
     return pd.DataFrame()
 
 
 def beta_load_csv_with_ts(filename):
+    if filename in _beta_csv_ts_cache:
+        return _beta_csv_ts_cache[filename]
     path = os.path.join(BETA_DATA_DIR, filename)
     if os.path.exists(path):
         try:
@@ -868,10 +886,21 @@ def beta_load_csv_with_ts(filename):
                             df = df_retry
                 except Exception:
                     pass
+            _beta_csv_ts_cache[filename] = (df, ts_col)
             return df, ts_col
         except Exception as e:
             print(f"Error loading beta {filename}: {e}")
     return pd.DataFrame(), None
+
+
+# Pre-load beta CSV files into cache at import time (works with gunicorn)
+print("Pre-loading beta CSV files into cache...")
+for _pf in ["dynamic_catalog.csv", "detailed_sqs.csv", "detailed_engine_a.csv",
+            "detailed_engine_b.csv", "detailed_subsystem_scores.csv",
+            "detailed_subsystem_alarms.csv", "sensor_config.csv"]:
+    beta_load_csv(_pf)
+    beta_load_csv_with_ts(_pf)
+print("Beta CSV pre-load complete.")
 
 
 @app.route("/api/beta/login", methods=["POST"])
@@ -1548,6 +1577,15 @@ if __name__ == "__main__":
             print(f"  [OK] {fname}")
         else:
             print(f"  [MISSING] {fname}")
+
+    # Pre-load beta CSV files into cache at startup to avoid slow first requests
+    print("Pre-loading beta CSV files...")
+    for bfname in ["dynamic_catalog.csv", "detailed_sqs.csv", "detailed_engine_a.csv",
+                    "detailed_engine_b.csv", "detailed_subsystem_scores.csv",
+                    "detailed_subsystem_alarms.csv", "sensor_config.csv"]:
+        beta_load_csv(bfname)
+        beta_load_csv_with_ts(bfname)
+    print("Beta CSV pre-load complete.")
 
     backend_host = os.environ.get("HOST", "0.0.0.0")
     backend_port = int(os.environ.get("PORT", "5000"))

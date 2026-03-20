@@ -42,7 +42,10 @@
       "Bash(ls c:/Users/AkashPatil/Anamoly/backend/data_beta/sensor_values* c:/Users/AkashPatil/Anamoly/backend/data_beta/df_chart*)",
       "Bash(ls c:/Users/AkashPatil/Anamoly/backend/data_beta/scores*)",
       "Bash(sed -n '8p')",
-      "Read(//c/Users/AkashPatil/Anamoly/backend/data_beta/**)"
+      "Read(//c/Users/AkashPatil/Anamoly/backend/data_beta/**)",
+      "Bash(ls -la /c/Users/AkashPatil/Anamoly/backend/data_beta/*.csv)",
+      "Bash(ls -lh /c/Users/AkashPatil/Anamoly/backend/data_beta/detailed_*.csv)",
+      "Read(//c/Users/AkashPatil/Anamoly/**)"
     ]
   }
 }
