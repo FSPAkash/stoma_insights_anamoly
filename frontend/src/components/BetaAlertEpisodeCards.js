@@ -533,6 +533,18 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay }) {
         </div>
       </div>
 
+      <div style={{ position: 'relative' }}>
+      {loading && filteredAlerts.length > 0 && (
+        <div style={{
+          position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(20, 24, 20, 0.45)', backdropFilter: 'blur(2px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 10, borderRadius: '8px',
+          color: '#C8D6C0', fontSize: '13px', fontWeight: 500, letterSpacing: '0.3px',
+        }}>
+          Updating alarm view...
+        </div>
+      )}
       {!filteredAlerts.length ? (
         <div style={styles.emptyState}>
           {loading
@@ -720,6 +732,7 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay }) {
           )}
         </>
       )}
+      </div>
     </GlassCard>
   );
 }

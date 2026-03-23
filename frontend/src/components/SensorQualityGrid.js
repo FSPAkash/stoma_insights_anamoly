@@ -240,6 +240,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
   const [selectedSystem, setSelectedSystem] = useState(null);
   const [qualityData, setQualityData] = useState(null);
   const [alerts, setAlerts] = useState([]);
+  const [alertsLoading, setAlertsLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [visibleSensors, setVisibleSensors] = useState({});
   const [activeMetric, setActiveMetric] = useState('a');
@@ -290,12 +291,16 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
   useEffect(() => {
     if (!showAlarms) return;
     let cancelled = false;
+    setAlertsLoading(true);
     getBetaAlerts({ alarm_view: alarmView })
       .then((res) => {
         if (!cancelled) setAlerts(res.data.alerts || []);
       })
       .catch(() => {
         if (!cancelled) setAlerts([]);
+      })
+      .finally(() => {
+        if (!cancelled) setAlertsLoading(false);
       });
     return () => { cancelled = true; };
   }, [alarmView, showAlarms]);
@@ -628,7 +633,18 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
         </div>
       )}
 
-      <div style={styles.chartContainer}>
+      <div style={{ ...styles.chartContainer, position: 'relative' }}>
+        {alertsLoading && !loading && (
+          <div style={{
+            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(20, 24, 20, 0.45)', backdropFilter: 'blur(2px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 10, borderRadius: '8px',
+            color: '#C8D6C0', fontSize: '13px', fontWeight: 500, letterSpacing: '0.3px',
+          }}>
+            Updating alarm overlays...
+          </div>
+        )}
         {loading ? (
           <div style={styles.loadingOverlay}>Loading sensor quality data...</div>
         ) : !chartData.length ? (
