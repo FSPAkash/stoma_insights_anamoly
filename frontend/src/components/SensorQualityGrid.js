@@ -258,6 +258,11 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
     if (subsystems.length > 0 && !selectedSystem) setSelectedSystem(subsystems[0].system_id);
   }, [subsystems, selectedSystem]);
 
+  // Force sensor view when ISOLATED is selected (no subsystem score available)
+  useEffect(() => {
+    if (selectedSystem === 'ISOLATED' && viewMode === 'subsystem') setViewMode('sensor');
+  }, [selectedSystem, viewMode]);
+
   const loadQuality = useCallback(async (systemId) => {
     if (!systemId) return;
     // Use cached data if available for instant tab switching
@@ -608,11 +613,13 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
         })}
       </div>
 
-      {/* View mode toggle */}
+      {/* View mode toggle - hide Subsystem Score when ISOLATED is selected */}
       <div style={styles.viewToggle}>
-        <div style={styles.viewBtn(viewMode === 'subsystem')} onClick={() => setViewMode('subsystem')}>
-          Subsystem Score
-        </div>
+        {selectedSystem !== 'ISOLATED' && (
+          <div style={styles.viewBtn(viewMode === 'subsystem')} onClick={() => setViewMode('subsystem')}>
+            Subsystem Score
+          </div>
+        )}
         <div style={styles.viewBtn(viewMode === 'sensor')} onClick={() => setViewMode('sensor')}>
           Sensor Breakdown
         </div>

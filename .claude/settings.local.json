@@ -46,7 +46,8 @@
       "Bash(ls -la /c/Users/AkashPatil/Anamoly/backend/data_beta/*.csv)",
       "Bash(ls -lh /c/Users/AkashPatil/Anamoly/backend/data_beta/detailed_*.csv)",
       "Read(//c/Users/AkashPatil/Anamoly/**)",
-      "Bash(ls -lh c:/Users/AkashPatil/Anamoly/backend/data_beta/*.csv)"
+      "Bash(ls -lh c:/Users/AkashPatil/Anamoly/backend/data_beta/*.csv)",
+      "Bash(grep -n \"subsystem_timeseries\\\\|sensor_timeseries\" /c/Users/AkashPatil/Anamoly/frontend/src/components/*.js)"
     ]
   }
 }
