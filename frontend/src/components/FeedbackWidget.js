@@ -168,7 +168,7 @@ const st = {
   },
 };
 
-function FeedbackWidget({ user }) {
+function FeedbackWidget({ user, sections = SECTIONS, title = 'Dashboard Feedback' }) {
   const [open, setOpen] = useState(false);
   const [selectedSection, setSelectedSection] = useState(null);
   const [rating, setRating] = useState(null);
@@ -191,7 +191,7 @@ function FeedbackWidget({ user }) {
     if (!selectedSection || !rating) return;
     setSubmitting(true);
     try {
-      const section = SECTIONS.find((s) => s.id === selectedSection);
+      const section = sections.find((s) => s.id === selectedSection);
       const res = await submitFeedback({
         user: user || '',
         section: section?.label || selectedSection,
@@ -209,7 +209,7 @@ function FeedbackWidget({ user }) {
     } finally {
       setSubmitting(false);
     }
-  }, [selectedSection, rating, comment, contextNote, reset]);
+  }, [selectedSection, rating, comment, contextNote, reset, sections, user]);
 
   const handleClose = useCallback(() => {
     setOpen(false);
@@ -242,10 +242,10 @@ function FeedbackWidget({ user }) {
                 {selectedSection ? (
                   <>
                     <button style={st.backBtn} onClick={reset}>&larr; Back</button>
-                    {SECTIONS.find((s) => s.id === selectedSection)?.label}
+                    {sections.find((s) => s.id === selectedSection)?.label}
                   </>
                 ) : (
-                  'Dashboard Feedback'
+                  title
                 )}
               </span>
               <button
@@ -282,7 +282,7 @@ function FeedbackWidget({ user }) {
                   <div style={{ fontSize: '12px', color: '#6B736B', marginBottom: '12px' }}>
                     Select a section to provide feedback:
                   </div>
-                  {SECTIONS.map((sec) => (
+                  {sections.map((sec) => (
                     <motion.button
                       key={sec.id}
                       style={st.sectionBtn(false)}

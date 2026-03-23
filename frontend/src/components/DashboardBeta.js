@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import TopBarBeta from './TopBarBeta';
 import BetaOverviewCards from './BetaOverviewCards';
+import BetaAlertEpisodeCards from './BetaAlertEpisodeCards';
+import BetaAlertDetailModal from './BetaAlertDetailModal';
 import SensorQualityGrid from './SensorQualityGrid';
 import SubsystemBehaviorChartBeta from './SubsystemBehaviorChartBeta';
 import FeedbackWidget from './FeedbackWidget';
@@ -10,7 +12,42 @@ import useTimeFilter from '../hooks/useTimeFilter';
 import {
   getBetaDashboardSummary,
   getBetaScoresTimeseries,
+  getBetaSubsystems,
 } from '../utils/api';
+
+const BETA_FEEDBACK_SECTIONS = [
+  { id: 'pipeline_overview', label: 'Pipeline Overview', desc: 'Overview cards, high-level health, and summary stats' },
+  { id: 'sensor_quality_plots', label: 'Sensor Quality Plots', desc: 'Subsystem score, sensor breakdown, alarm overlays, and chart interactions' },
+  { id: 'subsystem_behavior', label: 'Subsystem Behavior', desc: 'Raw sensor traces, downtime bands, alarm overlays, and click-through behavior' },
+  { id: 'system_alarms', label: 'System Alarms', desc: 'Alarm cards, minute vs span view, filters, sorting, and expand/collapse' },
+  { id: 'system_alarm_detail', label: 'System Alarm Detail', desc: 'Alarm detail modal, sensor rankings, severity mix, and decomposition' },
+  { id: 'time_filter', label: 'Time Filter', desc: 'Floating day and time filter controls across the dashboard' },
+  { id: 'overall_beta_dashboard', label: 'Overall Beta Dashboard', desc: 'General usability, clarity, responsiveness, and confidence in the experience' },
+];
+
+function LazySection({ children, height = '400px' }) {
+  const ref = useRef(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setVisible(true); observer.disconnect(); } },
+      { rootMargin: '200px' }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <div ref={ref}>
+      {visible ? children : (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height, color: '#8A928A', fontSize: '13px' }}>
+          Scroll to load...
+        </div>
+      )}
+    </div>
+  );
+}
 
 const AuroraBg = () => (
   <div className="aurora-bg">
@@ -87,7 +124,9 @@ function DashboardBeta({ user, onLogout }) {
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [selectedAlert, setSelectedAlert] = useState(null);
   const [widgetHovered, setWidgetHovered] = useState(false);
+  const [subsystems, setSubsystems] = useState([]);
 
   const timeFilter = useTimeFilter(timeseries, timestampCol);
   const hasActiveFilter = !!(timeFilter.filterLabel && timeFilter.filterLabel !== 'all data');
@@ -133,12 +172,14 @@ function DashboardBeta({ user, onLogout }) {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [summaryRes, tsRes] = await Promise.allSettled([
+      const [summaryRes, tsRes, subsRes] = await Promise.allSettled([
         getBetaDashboardSummary(),
         getBetaScoresTimeseries(1),
+        getBetaSubsystems(),
       ]);
 
       if (summaryRes.status === 'fulfilled') setSummary(summaryRes.value.data);
+      if (subsRes.status === 'fulfilled') setSubsystems(subsRes.value.data.subsystems || []);
       if (tsRes.status === 'fulfilled') {
         const tsData = tsRes.value.data;
         setTimeseries(tsData.timeseries || []);
@@ -197,6 +238,7 @@ function DashboardBeta({ user, onLogout }) {
                 <SensorQualityGrid
                   filterLabel={timeFilter.filterLabel}
                   onFilterClick={() => setFilterOpen(true)}
+                  onSelectAlert={setSelectedAlert}
                   selectedDay={timeFilter.selectedDay}
                   isLatestMode={timeFilter.isLatestMode}
                   lastNHours={timeFilter.lastNHours}
@@ -205,6 +247,7 @@ function DashboardBeta({ user, onLogout }) {
                   onZoomChange={handleChartZoom}
                   onZoomReset={handleZoomReset}
                   isZoomed={!!preZoomState}
+                  subsystems={subsystems}
                 />
               </div>
 
@@ -212,6 +255,7 @@ function DashboardBeta({ user, onLogout }) {
               <div style={styles.sectionDivider} />
               <div style={styles.sectionWrap}>
                 <div style={styles.sectionLabel}>Subsystem Behavior</div>
+                <LazySection height="400px">
                 <SubsystemBehaviorChartBeta
                   filterLabel={timeFilter.filterLabel}
                   onFilterClick={() => setFilterOpen(true)}
@@ -223,6 +267,19 @@ function DashboardBeta({ user, onLogout }) {
                   onZoomChange={handleChartZoom}
                   onZoomReset={handleZoomReset}
                   isZoomed={!!preZoomState}
+                  onSelectAlert={setSelectedAlert}
+                  subsystems={subsystems}
+                />
+                </LazySection>
+              </div>
+
+              {/* System Alarms */}
+              <div style={styles.sectionDivider} />
+              <div style={styles.sectionWrap}>
+                <div style={styles.sectionLabel}>System Alarms</div>
+                <BetaAlertEpisodeCards
+                  onSelectAlert={setSelectedAlert}
+                  selectedDay={timeFilter.selectedDay}
                 />
               </div>
 
@@ -231,7 +288,15 @@ function DashboardBeta({ user, onLogout }) {
         </div>
       </div>
 
-      <FeedbackWidget user={user} />
+      {selectedAlert && (
+        <BetaAlertDetailModal alert={selectedAlert} onClose={() => setSelectedAlert(null)} />
+      )}
+
+      <FeedbackWidget
+        user={user}
+        title="Beta Dashboard Feedback"
+        sections={BETA_FEEDBACK_SECTIONS}
+      />
 
       {!loading && (
         <div style={styles.floatingWrap}>

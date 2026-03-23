@@ -104,7 +104,7 @@ const subsystemColors = {
   ISOLATED: 'linear-gradient(135deg, #546E7A, #78909C)',
 };
 
-function SensorFlowDecomposition({ flowData, onSensorClick, alertClass }) {
+function SensorFlowDecomposition({ flowData, onSensorClick, alertClass, interactive = true }) {
   const [hoveredSensor, setHoveredSensor] = React.useState(null);
 
   const subsystemSensors = useMemo(() => {
@@ -165,8 +165,8 @@ function SensorFlowDecomposition({ flowData, onSensorClick, alertClass }) {
         }}
       >
         {alertClass && alertClass !== 'PROCESS'
-          ? `Sensor risk decomposition for the ${alertClass.replace('_', ' ')} subsystem during this alert episode. Click a sensor for detailed view.`
-          : 'Each row shows subsystem contribution flowing into individual sensor risk components. Click a sensor for detailed view.'}
+          ? `Sensor risk decomposition for the ${alertClass.replace('_', ' ')} subsystem during this alert episode.${interactive ? ' Click a sensor for detailed view.' : ''}`
+          : `Each row shows subsystem contribution flowing into individual sensor risk components.${interactive ? ' Click a sensor for detailed view.' : ''}`}
       </div>
 
       {subsystems.map(([subsystem, data], idx) => {
@@ -218,6 +218,7 @@ function SensorFlowDecomposition({ flowData, onSensorClick, alertClass }) {
                     style={{
                       ...styles.sensorChip(intensity),
                       position: 'relative',
+                      cursor: interactive ? 'pointer' : 'default',
                     }}
                     whileHover={{
                       scale: 1.05,
@@ -226,7 +227,7 @@ function SensorFlowDecomposition({ flowData, onSensorClick, alertClass }) {
                     }}
                     onMouseEnter={() => setHoveredSensor(sensor.sensor_id)}
                     onMouseLeave={() => setHoveredSensor(null)}
-                    onClick={() => onSensorClick && onSensorClick(sensor.sensor_id)}
+                    onClick={() => interactive && onSensorClick && onSensorClick(sensor.sensor_id)}
                   >
                     <span>{formatSensorName(sensor.sensor_id)}</span>
                     <span style={styles.chipScore}>

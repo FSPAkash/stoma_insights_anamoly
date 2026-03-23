@@ -80,8 +80,8 @@ export const getBetaInvalidSensors = (threshold = 0.10) =>
 export const getBetaSubsystems = () =>
   api.get('/beta/subsystems');
 
-export const getBetaSensorQuality = (systemId, downsample = 1) =>
-  api.get(`/beta/sensor_quality/${encodeURIComponent(systemId)}`, { params: { downsample } });
+export const getBetaSensorQuality = (systemId, downsample = 1, params = {}) =>
+  api.get(`/beta/sensor_quality/${encodeURIComponent(systemId)}`, { params: { downsample, ...params } });
 
 export const getBetaSubsystemScores = (downsample = 1) =>
   api.get('/beta/subsystem_scores', { params: { downsample } });
@@ -89,14 +89,14 @@ export const getBetaSubsystemScores = (downsample = 1) =>
 export const getBetaAeMetadata = () =>
   api.get('/beta/ae_metadata');
 
-export const getBetaAlerts = () =>
-  api.get('/beta/alerts');
+export const getBetaAlerts = (params = {}) =>
+  api.get('/beta/alerts', { params });
 
 export const getBetaScoresTimeseries = (downsample = 1) =>
   api.get('/beta/scores/timeseries', { params: { downsample } });
 
-export const getBetaDashboardSummary = () =>
-  api.get('/beta/dashboard/summary');
+export const getBetaDashboardSummary = (params = {}) =>
+  api.get('/beta/dashboard/summary', { params });
 
 export const getBetaScores = (params = {}) =>
   api.get('/beta/scores', { params });
@@ -107,8 +107,8 @@ export const getBetaNormalPeriods = () =>
 export const getBetaSystems = () =>
   api.get('/beta/systems');
 
-export const getBetaSubsystemBehavior = (systemId, downsample = 1) =>
-  api.get(`/beta/subsystem_behavior/${encodeURIComponent(systemId)}`, { params: { downsample } });
+export const getBetaSubsystemBehavior = (systemId, downsample = 1, params = {}) =>
+  api.get(`/beta/subsystem_behavior/${encodeURIComponent(systemId)}`, { params: { downsample, ...params } });
 
 export const getBetaAlertsSensorLevel = (params = {}) =>
   api.get('/beta/alerts_sensor_level', { params });

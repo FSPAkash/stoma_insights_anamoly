@@ -893,11 +893,352 @@ def beta_load_csv_with_ts(filename):
     return pd.DataFrame(), None
 
 
+def _beta_normalize_alarm_level(value):
+    if value is None:
+        return "UNKNOWN"
+    text = str(value).strip().upper()
+    if text in {"LOW", "MEDIUM", "HIGH"}:
+        return text
+    return text or "UNKNOWN"
+
+
+def _beta_lookup_indexed_row(indexed_df, key):
+    if indexed_df is None or indexed_df.empty or key not in indexed_df.index:
+        return None
+    row = indexed_df.loc[key]
+    if isinstance(row, pd.DataFrame):
+        return row.iloc[0]
+    return row
+
+
+def _beta_build_timestamp_alert_tables():
+    alert_cols = [
+        "view_type", "start_ts", "end_ts", "duration_minutes", "minute_count", "severity", "severity_mix",
+        "high_count", "medium_count", "low_count", "class",
+        "sensor_id", "sensor_max_score", "sensor_mean_score",
+        "affected_sensor_count", "affected_sensors", "max_score", "mean_score",
+        "threshold",
+    ]
+    sensor_cols = [
+        "view_type", "start_ts", "end_ts", "duration_minutes", "minute_count", "severity", "severity_mix",
+        "high_count", "medium_count", "low_count", "class",
+        "sensor", "sensor_rank", "sensor_peak_score", "sensor_mean_score",
+        "alert_max_score", "alert_mean_score", "threshold",
+    ]
+
+    alarms_df, alarms_ts = beta_load_csv_with_ts("detailed_subsystem_alarms.csv")
+    rankings_df, rankings_ts = beta_load_csv_with_ts("detailed_sensor_rankings.csv")
+    scores_df, scores_ts = beta_load_csv_with_ts("detailed_system_sensor_scores.csv")
+
+    if alarms_df.empty or not alarms_ts or alarms_ts not in alarms_df.columns:
+        return pd.DataFrame(columns=alert_cols), pd.DataFrame(columns=sensor_cols)
+
+    alarms_df = alarms_df.copy()
+    alarms_df[alarms_ts] = alarms_df[alarms_ts].astype(str)
+
+    rankings_indexed = pd.DataFrame()
+    if not rankings_df.empty and rankings_ts and rankings_ts in rankings_df.columns:
+        rankings_df = rankings_df.copy()
+        rankings_df[rankings_ts] = rankings_df[rankings_ts].astype(str)
+        rankings_indexed = rankings_df.set_index(rankings_ts, drop=False)
+
+    scores_indexed = pd.DataFrame()
+    if not scores_df.empty and scores_ts and scores_ts in scores_df.columns:
+        scores_df = scores_df.copy()
+        scores_df[scores_ts] = scores_df[scores_ts].astype(str)
+        scores_indexed = scores_df.set_index(scores_ts, drop=False)
+
+    alerts_rows = []
+    sensor_rows = []
+    alarm_cols = sorted([col for col in alarms_df.columns if col.endswith("__Alarm") and col != "downtime_flag"])
+
+    for alarm_col in alarm_cols:
+        sys_label = alarm_col.replace("__Alarm", "")
+        level_col = f"{sys_label}__Score_Level_At_Alarm"
+        score_col = f"{sys_label}__System_Score"
+
+        active_rows = alarms_df[alarms_df[alarm_col] == 1].copy()
+        if active_rows.empty:
+            continue
+
+        for _, alarm_row in active_rows.iterrows():
+            ts_str = str(alarm_row[alarms_ts])
+            severity = _beta_normalize_alarm_level(alarm_row.get(level_col))
+
+            ranking_row = _beta_lookup_indexed_row(rankings_indexed, ts_str)
+            score_row = _beta_lookup_indexed_row(scores_indexed, ts_str)
+
+            contribution_pairs = []
+            if ranking_row is not None:
+                prefix = f"{sys_label}__"
+                suffix = "__Contribution"
+                for col, raw_val in ranking_row.items():
+                    if not col.startswith(prefix) or not col.endswith(suffix):
+                        continue
+                    sensor_id = col[len(prefix):-len(suffix)]
+                    numeric = pd.to_numeric(pd.Series([raw_val]), errors="coerce").iloc[0]
+                    if pd.notna(numeric) and float(numeric) > 0:
+                        contribution_pairs.append((sensor_id, float(numeric)))
+
+                contribution_pairs.sort(key=lambda item: (-item[1], item[0]))
+
+                if not contribution_pairs:
+                    for rank in range(1, 6):
+                        sensor_col = f"{sys_label}___Rank_{rank}_Sensor"
+                        score_rank_col = f"{sys_label}___Rank_{rank}_Score"
+                        sensor_id = ranking_row.get(sensor_col)
+                        numeric = pd.to_numeric(pd.Series([ranking_row.get(score_rank_col)]), errors="coerce").iloc[0]
+                        if sensor_id and pd.notna(numeric):
+                            contribution_pairs.append((str(sensor_id), float(numeric)))
+
+            if contribution_pairs:
+                top_sensor, top_score = contribution_pairs[0]
+                affected_sensor_count = len(contribution_pairs)
+                affected_sensors = "|".join(sensor for sensor, _ in contribution_pairs)
+            else:
+                top_sensor = "UNKNOWN"
+                top_score = None
+                affected_sensor_count = 0
+                affected_sensors = "UNKNOWN"
+
+            score_val = None
+            if score_row is not None and score_col in score_row.index:
+                score_val = pd.to_numeric(pd.Series([score_row.get(score_col)]), errors="coerce").iloc[0]
+                score_val = None if pd.isna(score_val) else float(score_val)
+
+            alerts_rows.append({
+                "view_type": "minute",
+                "start_ts": ts_str,
+                "end_ts": ts_str,
+                "duration_minutes": 1,
+                "minute_count": 1,
+                "severity": severity,
+                "severity_mix": f"1 {severity.lower()}",
+                "high_count": 1 if severity == "HIGH" else 0,
+                "medium_count": 1 if severity == "MEDIUM" else 0,
+                "low_count": 1 if severity == "LOW" else 0,
+                "class": sys_label,
+                "sensor_id": top_sensor,
+                "sensor_max_score": top_score,
+                "sensor_mean_score": top_score,
+                "affected_sensor_count": affected_sensor_count,
+                "affected_sensors": affected_sensors,
+                "max_score": score_val,
+                "mean_score": score_val,
+                "threshold": "ADAPTIVE",
+            })
+
+            for rank_idx, (sensor_id, sensor_score) in enumerate(contribution_pairs, start=1):
+                sensor_rows.append({
+                    "view_type": "minute",
+                    "start_ts": ts_str,
+                    "end_ts": ts_str,
+                    "duration_minutes": 1,
+                    "minute_count": 1,
+                    "severity": severity,
+                    "severity_mix": f"1 {severity.lower()}",
+                    "high_count": 1 if severity == "HIGH" else 0,
+                    "medium_count": 1 if severity == "MEDIUM" else 0,
+                    "low_count": 1 if severity == "LOW" else 0,
+                    "class": sys_label,
+                    "sensor": sensor_id,
+                    "sensor_rank": rank_idx,
+                    "sensor_peak_score": sensor_score,
+                    "sensor_mean_score": sensor_score,
+                    "alert_max_score": score_val,
+                    "alert_mean_score": score_val,
+                    "threshold": "ADAPTIVE",
+                })
+
+    alerts_out = pd.DataFrame(alerts_rows, columns=alert_cols)
+    sensor_out = pd.DataFrame(sensor_rows, columns=sensor_cols)
+    return alerts_out, sensor_out
+
+
+def _beta_format_severity_mix(high_count, medium_count, low_count):
+    parts = []
+    if high_count:
+        parts.append(f"{int(high_count)} high")
+    if medium_count:
+        parts.append(f"{int(medium_count)} medium")
+    if low_count:
+        parts.append(f"{int(low_count)} low")
+    return ", ".join(parts) if parts else "0 alerts"
+
+
+def _beta_span_severity_label(high_count, medium_count, low_count):
+    nonzero = sum(1 for count in [high_count, medium_count, low_count] if count)
+    if nonzero > 1:
+        return "MIXED"
+    if high_count:
+        return "HIGH"
+    if medium_count:
+        return "MEDIUM"
+    if low_count:
+        return "LOW"
+    return "LOW"
+
+
+def _beta_build_span_alert_tables():
+    minute_alerts, minute_sensors = _beta_build_timestamp_alert_tables()
+    if minute_alerts.empty:
+        return minute_alerts.copy(), minute_sensors.copy()
+
+    alerts = minute_alerts.copy()
+    alerts["_ts_dt"] = pd.to_datetime(alerts["start_ts"], errors="coerce", utc=True)
+    alerts = alerts.dropna(subset=["_ts_dt"]).sort_values(["class", "_ts_dt"]).reset_index(drop=True)
+
+    sensors = minute_sensors.copy()
+    if not sensors.empty:
+        sensors["_ts_dt"] = pd.to_datetime(sensors["start_ts"], errors="coerce", utc=True)
+        sensors = sensors.dropna(subset=["_ts_dt"]).sort_values(["class", "_ts_dt", "sensor"]).reset_index(drop=True)
+
+    span_alert_rows = []
+    span_sensor_rows = []
+
+    for sys_label, sys_alerts in alerts.groupby("class", sort=True):
+        sys_alerts = sys_alerts.sort_values("_ts_dt").reset_index(drop=True)
+        span_start_idx = 0
+
+        def finalize_span(start_idx, end_idx):
+            span_df = sys_alerts.iloc[start_idx:end_idx + 1].copy()
+            if span_df.empty:
+                return
+
+            start_dt = span_df["_ts_dt"].iloc[0]
+            end_dt = span_df["_ts_dt"].iloc[-1]
+            minute_count = int(len(span_df))
+            duration_minutes = int((end_dt - start_dt).total_seconds() / 60) + 1
+
+            high_count = int((span_df["severity"] == "HIGH").sum())
+            medium_count = int((span_df["severity"] == "MEDIUM").sum())
+            low_count = int((span_df["severity"] == "LOW").sum())
+            severity = _beta_span_severity_label(high_count, medium_count, low_count)
+            severity_mix = _beta_format_severity_mix(high_count, medium_count, low_count)
+
+            span_sensor_df = pd.DataFrame()
+            if not sensors.empty:
+                span_sensor_df = sensors[
+                    (sensors["class"] == sys_label) &
+                    (sensors["_ts_dt"] >= start_dt) &
+                    (sensors["_ts_dt"] <= end_dt)
+                ].copy()
+
+            sensor_agg_rows = []
+            if not span_sensor_df.empty:
+                grouped = span_sensor_df.groupby("sensor", sort=True)
+                for sensor_id, sensor_group in grouped:
+                    sensor_high_count = int((sensor_group["severity"] == "HIGH").sum())
+                    sensor_medium_count = int((sensor_group["severity"] == "MEDIUM").sum())
+                    sensor_low_count = int((sensor_group["severity"] == "LOW").sum())
+                    sensor_agg_rows.append({
+                        "sensor": sensor_id,
+                        "minute_count": int(len(sensor_group)),
+                        "severity": _beta_span_severity_label(sensor_high_count, sensor_medium_count, sensor_low_count),
+                        "severity_mix": _beta_format_severity_mix(sensor_high_count, sensor_medium_count, sensor_low_count),
+                        "high_count": sensor_high_count,
+                        "medium_count": sensor_medium_count,
+                        "low_count": sensor_low_count,
+                        "sensor_peak_score": float(pd.to_numeric(sensor_group["sensor_peak_score"], errors="coerce").max())
+                        if not sensor_group["sensor_peak_score"].empty else None,
+                        "sensor_mean_score": float(pd.to_numeric(sensor_group["sensor_mean_score"], errors="coerce").mean())
+                        if not sensor_group["sensor_mean_score"].empty else None,
+                    })
+
+            sensor_agg_rows.sort(
+                key=lambda row: (
+                    -(row["sensor_peak_score"] if row["sensor_peak_score"] is not None else -1),
+                    -(row["sensor_mean_score"] if row["sensor_mean_score"] is not None else -1),
+                    row["sensor"],
+                )
+            )
+
+            for rank_idx, row in enumerate(sensor_agg_rows, start=1):
+                span_sensor_rows.append({
+                    "view_type": "span",
+                    "start_ts": str(start_dt),
+                    "end_ts": str(end_dt),
+                    "duration_minutes": duration_minutes,
+                    "minute_count": row["minute_count"],
+                    "severity": row["severity"],
+                    "severity_mix": row["severity_mix"],
+                    "high_count": row["high_count"],
+                    "medium_count": row["medium_count"],
+                    "low_count": row["low_count"],
+                    "class": sys_label,
+                    "sensor": row["sensor"],
+                    "sensor_rank": rank_idx,
+                    "sensor_peak_score": row["sensor_peak_score"],
+                    "sensor_mean_score": row["sensor_mean_score"],
+                    "alert_max_score": float(pd.to_numeric(span_df["max_score"], errors="coerce").max())
+                    if not span_df["max_score"].empty else None,
+                    "alert_mean_score": float(pd.to_numeric(span_df["mean_score"], errors="coerce").mean())
+                    if not span_df["mean_score"].empty else None,
+                    "threshold": "ADAPTIVE",
+                })
+
+            primary_sensor = sensor_agg_rows[0]["sensor"] if sensor_agg_rows else "UNKNOWN"
+            primary_sensor_peak = sensor_agg_rows[0]["sensor_peak_score"] if sensor_agg_rows else None
+            primary_sensor_mean = sensor_agg_rows[0]["sensor_mean_score"] if sensor_agg_rows else None
+            affected_sensors = "|".join(row["sensor"] for row in sensor_agg_rows) if sensor_agg_rows else "UNKNOWN"
+
+            span_alert_rows.append({
+                "view_type": "span",
+                "start_ts": str(start_dt),
+                "end_ts": str(end_dt),
+                "duration_minutes": duration_minutes,
+                "minute_count": minute_count,
+                "severity": severity,
+                "severity_mix": severity_mix,
+                "high_count": high_count,
+                "medium_count": medium_count,
+                "low_count": low_count,
+                "class": sys_label,
+                "sensor_id": primary_sensor,
+                "sensor_max_score": primary_sensor_peak,
+                "sensor_mean_score": primary_sensor_mean,
+                "affected_sensor_count": len(sensor_agg_rows),
+                "affected_sensors": affected_sensors,
+                "max_score": float(pd.to_numeric(span_df["max_score"], errors="coerce").max())
+                if not span_df["max_score"].empty else None,
+                "mean_score": float(pd.to_numeric(span_df["mean_score"], errors="coerce").mean())
+                if not span_df["mean_score"].empty else None,
+                "threshold": "ADAPTIVE",
+            })
+
+        for idx in range(1, len(sys_alerts)):
+            current_ts = sys_alerts.loc[idx, "_ts_dt"]
+            prev_ts = sys_alerts.loc[idx - 1, "_ts_dt"]
+            if current_ts - prev_ts != pd.Timedelta(minutes=1):
+                finalize_span(span_start_idx, idx - 1)
+                span_start_idx = idx
+        finalize_span(span_start_idx, len(sys_alerts) - 1)
+
+    alert_cols = minute_alerts.columns.tolist()
+    sensor_cols = minute_sensors.columns.tolist()
+    span_alerts = pd.DataFrame(span_alert_rows, columns=alert_cols)
+    span_sensors = pd.DataFrame(span_sensor_rows, columns=sensor_cols)
+    return span_alerts, span_sensors
+
+
+def _beta_get_alarm_view():
+    alarm_view = str(request.args.get("alarm_view", "minute")).strip().lower()
+    return "span" if alarm_view == "span" else "minute"
+
+
+def _beta_build_alert_tables_for_view(alarm_view):
+    if alarm_view == "span":
+        return _beta_build_span_alert_tables()
+    return _beta_build_timestamp_alert_tables()
+
+
 # Pre-load beta CSV files into cache at import time (works with gunicorn)
 print("Pre-loading beta CSV files into cache...")
-for _pf in ["dynamic_catalog.csv", "detailed_sqs.csv", "detailed_engine_a.csv",
+for _pf in ["dynamic_catalog.csv", "dynamic_weights.csv", "sensor_config.csv",
+            "df_chart_data.csv", "alerts.csv", "alerts_sensor_level.csv",
+            "detailed_sqs.csv", "detailed_engine_a.csv",
             "detailed_engine_b.csv", "detailed_subsystem_scores.csv",
-            "detailed_subsystem_alarms.csv", "sensor_config.csv"]:
+            "detailed_subsystem_alarms.csv"]:
     beta_load_csv(_pf)
     beta_load_csv_with_ts(_pf)
 print("Beta CSV pre-load complete.")
@@ -1045,98 +1386,81 @@ def beta_sensor_quality(system_id):
     downsample = request.args.get("downsample", default=1, type=int)
 
     catalog_df = beta_load_csv("dynamic_catalog.csv")
+    empty_response = {
+        "sensors": [], "timeseries": [], "subsystem_timeseries": [],
+        "timestamp_col": "ts", "downtime_bands": [], "alarm_bands": [],
+    }
     if catalog_df.empty:
-        return jsonify({"sensors": [], "timeseries": []})
+        return jsonify(empty_response)
 
     sys_sensors = catalog_df[catalog_df["system"] == system_id]["sensor"].tolist() if "system" in catalog_df.columns else []
     if not sys_sensors:
-        return jsonify({"sensors": [], "timeseries": []})
+        return jsonify(empty_response)
 
     # Try detailed files first (new pipeline outputs)
     sqs_df, sqs_ts = beta_load_csv_with_ts("detailed_sqs.csv")
     enga_df, enga_ts = beta_load_csv_with_ts("detailed_engine_a.csv")
     engb_df, engb_ts = beta_load_csv_with_ts("detailed_engine_b.csv")
 
-    # Load downtime info from detailed_subsystem_alarms.csv (scores.csv doesn't exist in beta)
+    # Load downtime info from detailed_subsystem_alarms.csv
     alarms_df, alarms_ts = beta_load_csv_with_ts("detailed_subsystem_alarms.csv")
 
-    ts_col = sqs_ts or enga_ts or engb_ts or alarms_ts
-
-    # Build per-sensor data using the double-underscore naming convention: {SYS}__{sensor}
     prefix = f"{system_id}__"
     result_sensors = []
     timeseries = []
 
-    # Determine which source has data
     has_detailed = not sqs_df.empty or not enga_df.empty or not engb_df.empty
 
     if has_detailed:
-        # Use the longest df for timestamps
         ref_df = sqs_df if not sqs_df.empty else (enga_df if not enga_df.empty else engb_df)
         ref_ts = sqs_ts or enga_ts or engb_ts
 
-        # Find sensor columns matching this system
+        # Find sensor columns matching this system (prefixed first, then plain)
         for sensor in sys_sensors:
             col_key = f"{prefix}{sensor}"
-            found = False
-            for df_check in [sqs_df, enga_df, engb_df]:
-                if col_key in df_check.columns:
-                    found = True
-                    break
-            if found:
+            if any(col_key in df.columns for df in [sqs_df, enga_df, engb_df]):
                 result_sensors.append(sensor)
-
         if not result_sensors:
-            # Fallback: try columns without system prefix
             for sensor in sys_sensors:
-                for df_check in [sqs_df, enga_df, engb_df]:
-                    if sensor in df_check.columns:
-                        result_sensors.append(sensor)
-                        break
+                if any(sensor in df.columns for df in [sqs_df, enga_df, engb_df]):
+                    result_sensors.append(sensor)
+
+        # Vectorized: build a combined DataFrame with renamed columns
+        combined = pd.DataFrame()
+        if ref_ts and ref_ts in ref_df.columns:
+            combined["ts"] = ref_df[ref_ts].astype(str).values
+
+        # Downtime flag
+        if not alarms_df.empty and "downtime_flag" in alarms_df.columns:
+            dt_vals = alarms_df["downtime_flag"].iloc[:len(ref_df)]
+            combined["downtime"] = dt_vals.fillna(0).astype(int).values[:len(ref_df)] if len(dt_vals) >= len(ref_df) else pd.concat([dt_vals, pd.Series([0] * (len(ref_df) - len(dt_vals)))]).fillna(0).astype(int).values
+
+        for sensor in result_sensors:
+            col_prefixed = f"{prefix}{sensor}"
+            col_plain = sensor
+            # SQS
+            for col_try in [col_prefixed, col_plain]:
+                if not sqs_df.empty and col_try in sqs_df.columns:
+                    combined[f"{sensor}__sqs"] = sqs_df[col_try].iloc[:len(ref_df)].values
+                    break
+            # Engine A
+            for col_try in [col_prefixed, col_plain]:
+                if not enga_df.empty and col_try in enga_df.columns:
+                    combined[f"{sensor}__a"] = enga_df[col_try].iloc[:len(ref_df)].values
+                    break
+            # Engine B
+            for col_try in [col_prefixed, col_plain]:
+                if not engb_df.empty and col_try in engb_df.columns:
+                    combined[f"{sensor}__b"] = engb_df[col_try].iloc[:len(ref_df)].values
+                    break
 
         # Downsample
-        n = len(ref_df)
-        indices = list(range(0, n, max(1, downsample)))
+        if downsample > 1:
+            combined = combined.iloc[::downsample]
 
-        for i in indices:
-            row = {}
-            if ref_ts and ref_ts in ref_df.columns:
-                row["ts"] = str(ref_df[ref_ts].iloc[i])
-
-            # Downtime flag from alarms file
-            if not alarms_df.empty and "downtime_flag" in alarms_df.columns and i < len(alarms_df):
-                val = alarms_df["downtime_flag"].iloc[i]
-                row["downtime"] = int(val) if not (isinstance(val, float) and math.isnan(val)) else 0
-
-            for sensor in result_sensors:
-                col_prefixed = f"{prefix}{sensor}"
-                col_plain = sensor
-
-                # SQS
-                for col_try in [col_prefixed, col_plain]:
-                    if not sqs_df.empty and col_try in sqs_df.columns and i < len(sqs_df):
-                        v = sqs_df[col_try].iloc[i]
-                        row[f"{sensor}__sqs"] = None if (isinstance(v, float) and math.isnan(v)) else v
-                        break
-
-                # Engine A
-                for col_try in [col_prefixed, col_plain]:
-                    if not enga_df.empty and col_try in enga_df.columns and i < len(enga_df):
-                        v = enga_df[col_try].iloc[i]
-                        row[f"{sensor}__a"] = None if (isinstance(v, float) and math.isnan(v)) else v
-                        break
-
-                # Engine B
-                for col_try in [col_prefixed, col_plain]:
-                    if not engb_df.empty and col_try in engb_df.columns and i < len(engb_df):
-                        v = engb_df[col_try].iloc[i]
-                        row[f"{sensor}__b"] = None if (isinstance(v, float) and math.isnan(v)) else v
-                        break
-
-            timeseries.append(row)
+        combined = sanitize_df(combined)
+        timeseries = combined.to_dict(orient="records")
     else:
-        # Fallback: use SQS from main scores + Engine A/B from combined scores
-        # This path works with the old pipeline data
         result_sensors = sys_sensors
 
     # Downtime bands from detailed_subsystem_alarms.csv
@@ -1158,26 +1482,24 @@ def beta_sensor_quality(system_id):
                     span_end = t
             downtime_bands.append({"start": str(span_start), "end": str(span_end)})
 
-    # Subsystem-level scores from detailed_subsystem_scores.csv
+    # Subsystem-level scores from detailed_subsystem_scores.csv (vectorized)
     sub_df, sub_ts = beta_load_csv_with_ts("detailed_subsystem_scores.csv")
     subsystem_timeseries = []
     score_col = f"{system_id}__System_Score"
     thresh_col = f"{system_id}__Adaptive_Threshold"
     has_subsystem = not sub_df.empty and sub_ts and score_col in sub_df.columns
     if has_subsystem:
-        n_sub = len(sub_df)
-        indices_sub = list(range(0, n_sub, max(1, downsample)))
-        for i in indices_sub:
-            row = {"ts": str(sub_df[sub_ts].iloc[i])}
-            if "downtime_flag" in sub_df.columns:
-                val = sub_df["downtime_flag"].iloc[i]
-                row["downtime"] = int(val) if not (isinstance(val, float) and math.isnan(val)) else 0
-            v = sub_df[score_col].iloc[i]
-            row["system_score"] = None if (isinstance(v, float) and math.isnan(v)) else round(float(v), 6)
-            if thresh_col in sub_df.columns:
-                t = sub_df[thresh_col].iloc[i]
-                row["adaptive_threshold"] = None if (isinstance(t, float) and math.isnan(t)) else round(float(t), 6)
-            subsystem_timeseries.append(row)
+        sub_combined = pd.DataFrame()
+        sub_combined["ts"] = sub_df[sub_ts].astype(str).values
+        if "downtime_flag" in sub_df.columns:
+            sub_combined["downtime"] = sub_df["downtime_flag"].fillna(0).astype(int).values
+        sub_combined["system_score"] = sub_df[score_col].round(6).values
+        if thresh_col in sub_df.columns:
+            sub_combined["adaptive_threshold"] = sub_df[thresh_col].round(6).values
+        if downsample > 1:
+            sub_combined = sub_combined.iloc[::downsample]
+        sub_combined = sanitize_df(sub_combined)
+        subsystem_timeseries = sub_combined.to_dict(orient="records")
 
     return jsonify({
         "sensors": result_sensors,
@@ -1185,6 +1507,7 @@ def beta_sensor_quality(system_id):
         "subsystem_timeseries": subsystem_timeseries,
         "timestamp_col": "ts",
         "downtime_bands": downtime_bands,
+        "alarm_bands": [],
     })
 
 
@@ -1221,18 +1544,17 @@ def beta_subsystem_scores():
 
 @app.route("/api/beta/subsystem_behavior/<system_id>", methods=["GET"])
 def beta_subsystem_behavior(system_id):
-    """Return live sensor data (from standard data/) plus downtime and alarm bands from data_beta/.
+    """Return beta subsystem behavior from a single beta artifact folder.
 
-    Uses the same raw sensor data as the standard /api/systems/<system_id>/sensors endpoint
-    (df_chart_data.csv or sensor_values_{system_id}.csv from DATA_DIR), but overlays
-    downtime and alarm bands from data_beta/detailed_subsystem_alarms.csv.
-    Only includes High (Alarm=1) alarm bands.
+    Raw sensor traces, subsystem mapping, downtime bands, and alarm bands are all
+    read from BETA_DATA_DIR. This avoids the previous split where live traces came
+    from data/ while beta overlays came from data_beta/.
     """
     downsample = request.args.get("downsample", default=1, type=int)
 
-    # --- Live sensor data from standard data/ directory ---
-    catalog_df = load_csv("dynamic_catalog.csv")
-    chart_df, ts_col = load_csv_with_ts("df_chart_data.csv")
+    # --- Raw sensor data from beta artifact directory ---
+    catalog_df = beta_load_csv("dynamic_catalog.csv")
+    chart_df, ts_col = beta_load_csv_with_ts("df_chart_data.csv")
     sensor_df = pd.DataFrame()
 
     if not chart_df.empty and not catalog_df.empty:
@@ -1241,7 +1563,7 @@ def beta_subsystem_behavior(system_id):
         sensor_df = chart_df[keep_cols]
     else:
         fname = f"sensor_values_{system_id}.csv"
-        sensor_df, ts_col = load_csv_with_ts(fname)
+        sensor_df, ts_col = beta_load_csv_with_ts(fname)
 
     if sensor_df.empty:
         return jsonify({"timeseries": [], "sensors": [], "timestamp_col": "", "downtime_bands": [], "alarm_bands": []})
@@ -1253,7 +1575,7 @@ def beta_subsystem_behavior(system_id):
     sensor_cols = [c for c in sensor_df.columns if c != ts_col]
     timeseries = sensor_df.to_dict(orient="records")
 
-    # --- Downtime and alarm bands from data_beta/ ---
+    # --- Downtime and alarm bands from the same beta artifact directory ---
     alarms_df, alarms_ts = beta_load_csv_with_ts("detailed_subsystem_alarms.csv")
 
     # Downtime bands
@@ -1275,42 +1597,12 @@ def beta_subsystem_behavior(system_id):
                     span_end = t
             downtime_bands.append({"start": str(span_start), "end": str(span_end)})
 
-    # Alarm bands: only where {system_id}__Alarm == 1 (High alarms)
-    alarm_bands = []
-    if not alarms_df.empty and alarms_ts:
-        alarm_col = f"{system_id}__Alarm"
-        level_col = f"{system_id}__Score_Level_At_Alarm"
-        if alarm_col in alarms_df.columns:
-            alarm_mask = alarms_df[alarm_col] == 1
-            if alarm_mask.any():
-                alarm_rows = alarms_df[alarm_mask].copy()
-                alarm_rows["_ts"] = pd.to_datetime(alarm_rows[alarms_ts])
-                alarm_rows = alarm_rows.sort_values("_ts").reset_index(drop=True)
-                merge_gap = pd.Timedelta(minutes=15)
-                span_start = alarm_rows["_ts"].iloc[0]
-                span_end = alarm_rows["_ts"].iloc[0]
-                span_level = alarm_rows[level_col].iloc[0] if level_col in alarm_rows.columns else "High"
-                for j in range(1, len(alarm_rows)):
-                    t = alarm_rows["_ts"].iloc[j]
-                    lv = alarm_rows[level_col].iloc[j] if level_col in alarm_rows.columns else "High"
-                    if t - span_end <= merge_gap:
-                        span_end = t
-                        sev_order = {"Low": 0, "Medium": 1, "High": 2}
-                        if sev_order.get(str(lv), 0) > sev_order.get(str(span_level), 0):
-                            span_level = lv
-                    else:
-                        alarm_bands.append({"start": str(span_start), "end": str(span_end), "severity": str(span_level)})
-                        span_start = t
-                        span_end = t
-                        span_level = lv
-                alarm_bands.append({"start": str(span_start), "end": str(span_end), "severity": str(span_level)})
-
     return jsonify({
         "timeseries": timeseries,
         "timestamp_col": ts_col,
         "sensors": sensor_cols,
         "downtime_bands": downtime_bands,
-        "alarm_bands": alarm_bands,
+        "alarm_bands": [],
     })
 
 
@@ -1326,20 +1618,29 @@ def beta_ae_metadata():
 # Reuse existing endpoints for beta alerts/scores/risk — just proxy to same data
 @app.route("/api/beta/alerts", methods=["GET"])
 def beta_alerts():
-    df = beta_load_csv("alerts.csv")
+    alarm_view = _beta_get_alarm_view()
+    df, _ = _beta_build_alert_tables_for_view(alarm_view)
     if df.empty:
         return jsonify({"alerts": [], "summary": {}})
     if "class" in df.columns:
         df = df[df["class"] != "NORMAL"]
     df = sanitize_df(df)
-    high_count = len(df[df["severity"] == "HIGH"]) if "severity" in df.columns else 0
-    medium_count = len(df[df["severity"] == "MEDIUM"]) if "severity" in df.columns else 0
+    if alarm_view == "span":
+        high_count = int((pd.to_numeric(df["high_count"], errors="coerce").fillna(0) > 0).sum()) if "high_count" in df.columns else 0
+        medium_count = int((pd.to_numeric(df["medium_count"], errors="coerce").fillna(0) > 0).sum()) if "medium_count" in df.columns else 0
+        low_count = int((pd.to_numeric(df["low_count"], errors="coerce").fillna(0) > 0).sum()) if "low_count" in df.columns else 0
+    else:
+        high_count = len(df[df["severity"] == "HIGH"]) if "severity" in df.columns else 0
+        medium_count = len(df[df["severity"] == "MEDIUM"]) if "severity" in df.columns else 0
+        low_count = len(df[df["severity"] == "LOW"]) if "severity" in df.columns else 0
     class_dist = df["class"].value_counts().to_dict() if "class" in df.columns else {}
     summary = {
         "total_alerts": len(df),
         "high_count": int(high_count),
         "medium_count": int(medium_count),
+        "low_count": int(low_count),
         "class_distribution": class_dist,
+        "alarm_view": alarm_view,
     }
     return jsonify({"alerts": df.to_dict(orient="records"), "summary": summary})
 
@@ -1378,12 +1679,13 @@ def beta_scores_timeseries():
 
 @app.route("/api/beta/dashboard/summary", methods=["GET"])
 def beta_dashboard_summary():
-    alerts_df = beta_load_csv("alerts.csv")
+    alarm_view = _beta_get_alarm_view()
+    alerts_df, _ = _beta_build_alert_tables_for_view(alarm_view)
     scores_df, ts_col = beta_load_csv_with_ts("detailed_subsystem_scores.csv")
     catalog_df = beta_load_csv("dynamic_catalog.csv")
 
     summary = {
-        "total_alerts": 0, "high_alerts": 0, "medium_alerts": 0,
+        "total_alerts": 0, "high_alerts": 0, "medium_alerts": 0, "low_alerts": 0,
         "total_sensors": 0, "class_distribution": {},
         "avg_risk_score": None, "max_risk_score": None, "current_risk_score": None,
         "avg_sqs": None, "running_pct": None,
@@ -1394,11 +1696,17 @@ def beta_dashboard_summary():
         if "class" in alerts_df.columns:
             alerts_df = alerts_df[alerts_df["class"] != "NORMAL"]
         summary["total_alerts"] = len(alerts_df)
-        if "severity" in alerts_df.columns:
+        if alarm_view == "span":
+            summary["high_alerts"] = int((pd.to_numeric(alerts_df["high_count"], errors="coerce").fillna(0) > 0).sum()) if "high_count" in alerts_df.columns else 0
+            summary["medium_alerts"] = int((pd.to_numeric(alerts_df["medium_count"], errors="coerce").fillna(0) > 0).sum()) if "medium_count" in alerts_df.columns else 0
+            summary["low_alerts"] = int((pd.to_numeric(alerts_df["low_count"], errors="coerce").fillna(0) > 0).sum()) if "low_count" in alerts_df.columns else 0
+        elif "severity" in alerts_df.columns:
             summary["high_alerts"] = int((alerts_df["severity"] == "HIGH").sum())
             summary["medium_alerts"] = int((alerts_df["severity"] == "MEDIUM").sum())
+            summary["low_alerts"] = int((alerts_df["severity"] == "LOW").sum())
         if "class" in alerts_df.columns:
             summary["class_distribution"] = alerts_df["class"].value_counts().to_dict()
+        summary["alarm_view"] = alarm_view
 
     if not scores_df.empty:
         if "risk_score" in scores_df.columns:
@@ -1493,7 +1801,8 @@ def beta_systems():
 
 @app.route("/api/beta/alerts_sensor_level", methods=["GET"])
 def beta_alerts_sensor_level():
-    df = beta_load_csv("alerts_sensor_level.csv")
+    alarm_view = _beta_get_alarm_view()
+    _, df = _beta_build_alert_tables_for_view(alarm_view)
     if df.empty:
         return jsonify({"sensor_alerts": []})
     df = sanitize_df(df)
@@ -1580,9 +1889,11 @@ if __name__ == "__main__":
 
     # Pre-load beta CSV files into cache at startup to avoid slow first requests
     print("Pre-loading beta CSV files...")
-    for bfname in ["dynamic_catalog.csv", "detailed_sqs.csv", "detailed_engine_a.csv",
+    for bfname in ["dynamic_catalog.csv", "dynamic_weights.csv", "sensor_config.csv",
+                    "df_chart_data.csv", "alerts.csv", "alerts_sensor_level.csv",
+                    "detailed_sqs.csv", "detailed_engine_a.csv",
                     "detailed_engine_b.csv", "detailed_subsystem_scores.csv",
-                    "detailed_subsystem_alarms.csv", "sensor_config.csv"]:
+                    "detailed_subsystem_alarms.csv"]:
         beta_load_csv(bfname)
         beta_load_csv_with_ts(bfname)
     print("Beta CSV pre-load complete.")

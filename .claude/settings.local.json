@@ -45,7 +45,8 @@
       "Read(//c/Users/AkashPatil/Anamoly/backend/data_beta/**)",
       "Bash(ls -la /c/Users/AkashPatil/Anamoly/backend/data_beta/*.csv)",
       "Bash(ls -lh /c/Users/AkashPatil/Anamoly/backend/data_beta/detailed_*.csv)",
-      "Read(//c/Users/AkashPatil/Anamoly/**)"
+      "Read(//c/Users/AkashPatil/Anamoly/**)",
+      "Bash(ls -lh c:/Users/AkashPatil/Anamoly/backend/data_beta/*.csv)"
     ]
   }
 }

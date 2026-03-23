@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   ResponsiveContainer,
   LineChart,
@@ -11,7 +11,7 @@ import {
 } from 'recharts';
 import GlassCard from './GlassCard';
 import InfoTooltip from './InfoTooltip';
-import { getBetaSubsystems, getBetaSensorQuality } from '../utils/api';
+import { getBetaAlerts, getBetaSensorQuality } from '../utils/api';
 import { formatSensorName, systemColor } from '../utils/formatters';
 
 const SENSOR_PALETTE = [
@@ -41,7 +41,7 @@ const styles = {
     color: active ? color : '#6B736B', transition: 'all 0.2s ease',
     backdropFilter: 'blur(8px)', userSelect: 'none',
   }),
-  chartContainer: { position: 'relative', minHeight: '340px' },
+  chartContainer: { position: 'relative', minHeight: '340px', overflow: 'visible' },
   loadingOverlay: {
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     height: '300px', color: '#8A928A', fontSize: '13px',
@@ -79,27 +79,119 @@ const filterBadgeStyle = {
   whiteSpace: 'nowrap', letterSpacing: '0.02em', textTransform: 'none',
 };
 
-const CustomTooltip = ({ active, payload, downtimeBands }) => {
+const controlPillStyle = (active, accent = '#1B5E20') => ({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '6px',
+  fontSize: '10px',
+  padding: '4px 12px',
+  borderRadius: '20px',
+  cursor: 'pointer',
+  border: active ? `1.5px solid ${accent}` : '1px solid rgba(203,230,200,0.6)',
+  background: active ? 'rgba(27,94,32,0.08)' : 'rgba(255,255,255,0.6)',
+  color: active ? accent : '#8A928A',
+  fontWeight: 600,
+  transition: 'all 0.2s',
+});
+
+const getAlarmStyle = (severity) => (
+  severity === 'HIGH'
+    ? {
+        text: '#D32F2F',
+        bg: 'rgba(239,83,80,0.10)',
+        border: '1px solid rgba(239,83,80,0.3)',
+        swatchBg: 'rgba(239,83,80,0.30)',
+        swatchBorder: '1px solid rgba(239,83,80,0.5)',
+        areaFill: 'rgba(239,83,80,0.22)',
+        areaStroke: 'rgba(239,83,80,0.5)',
+      }
+    : severity === 'MEDIUM'
+      ? {
+        text: '#E65100',
+        bg: 'rgba(255,167,38,0.14)',
+        border: '1px solid rgba(255,167,38,0.32)',
+        swatchBg: 'rgba(255,167,38,0.34)',
+        swatchBorder: '1px solid rgba(245,124,0,0.45)',
+        areaFill: 'rgba(255,167,38,0.20)',
+        areaStroke: 'rgba(245,124,0,0.46)',
+      }
+      : severity === 'MIXED'
+        ? {
+        text: '#455A64',
+        bg: 'rgba(120,144,156,0.16)',
+        border: '1px solid rgba(120,144,156,0.32)',
+        swatchBg: 'rgba(120,144,156,0.30)',
+        swatchBorder: '1px solid rgba(84,110,122,0.45)',
+        areaFill: 'rgba(120,144,156,0.20)',
+        areaStroke: 'rgba(84,110,122,0.46)',
+      }
+      : {
+        text: '#9A6A00',
+        bg: 'rgba(255,213,79,0.18)',
+        border: '1px solid rgba(255,193,7,0.34)',
+        swatchBg: 'rgba(255,213,79,0.36)',
+        swatchBorder: '1px solid rgba(255,179,0,0.45)',
+        areaFill: 'rgba(255,213,79,0.22)',
+        areaStroke: 'rgba(255,179,0,0.46)',
+      }
+);
+
+const buildAlarmSummary = (alarm) => {
+  if (!alarm) return '';
+  const minuteCount = Number(alarm.minute_count || 1);
+  if (minuteCount <= 1) return '';
+  const mix = alarm.severity_mix ? String(alarm.severity_mix) : '';
+  return mix ? `${minuteCount} alerts - ${mix}` : `${minuteCount} alerts`;
+};
+
+const CustomTooltip = ({ active, payload, downtimeBands, alarmBands, alarmView }) => {
   if (!active || !payload || !payload.length) return null;
   const row = payload[0]?.payload;
   const rawTs = row?.fullTs || row?.ts || '';
   const displayTs = rawTs ? String(rawTs).replace(/\+00:00$/, ' UTC').substring(0, 23) : '';
   const idx = row?._idx;
   const inDowntime = idx != null && downtimeBands.some((b) => idx >= b.start && idx <= b.end);
+  const matchedAlarm = idx != null ? alarmBands.find((b) => idx >= b.start && idx <= b.end) : null;
+
+  const zoneLabels = [];
+  if (inDowntime) {
+    zoneLabels.push({
+      text: 'DOWNTIME',
+      color: '#616161',
+      bg: 'rgba(158,158,158,0.15)',
+      border: '1.5px solid rgba(120,120,120,0.4)',
+    });
+  }
+  if (matchedAlarm) {
+    const alarmStyle = getAlarmStyle(matchedAlarm.severity);
+    zoneLabels.push({
+      text: alarmView === 'span'
+        ? `Alarm Span - ${matchedAlarm.severity}`
+        : `System Alarm - ${matchedAlarm.severity}`,
+      color: alarmStyle.text,
+      bg: alarmStyle.bg,
+      border: alarmStyle.border,
+    });
+  }
 
   return (
     <div style={{
       background: 'rgba(255,255,255,0.94)', backdropFilter: 'blur(20px)',
       border: '1px solid rgba(203,230,200,0.5)', borderRadius: '14px',
       padding: '12px 16px', boxShadow: '0 12px 36px rgba(27,94,32,0.12)',
-      fontSize: '11px', maxWidth: '320px',
+      fontSize: '11px', maxWidth: '420px',
     }}>
-      {inDowntime && (
+      {zoneLabels.map((zl, zi) => (
         <div style={{
-          background: 'rgba(158,158,158,0.15)', border: '1.5px solid rgba(120,120,120,0.4)',
-          borderRadius: '6px', padding: '4px 10px', marginBottom: '6px',
-          fontSize: '10px', fontWeight: 700, color: '#616161', letterSpacing: '0.04em',
-        }}>DOWNTIME</div>
+          background: zl.bg, border: zl.border,
+          borderRadius: '6px', padding: '4px 10px', marginBottom: '4px',
+          fontSize: '10px', fontWeight: 700, color: zl.color, letterSpacing: '0.04em',
+        }} key={zi}>{zl.text}</div>
+      ))}
+      {matchedAlarm && buildAlarmSummary(matchedAlarm) && (
+        <div style={{ fontSize: '10px', color: '#6B736B', marginBottom: '4px', fontWeight: 600 }}>
+          {buildAlarmSummary(matchedAlarm)}
+        </div>
       )}
       <div style={{ fontWeight: 600, color: '#1B5E20', marginBottom: '6px' }}>{displayTs}</div>
       {payload.map((p, i) => {
@@ -123,46 +215,63 @@ const CustomTooltip = ({ active, payload, downtimeBands }) => {
           marginTop: '6px', paddingTop: '6px', borderTop: '1px solid rgba(27,94,32,0.12)',
         }}>
           <div style={{ fontSize: '9.5px', fontWeight: 700, color: '#BF360C', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
-            Degraded SQS
+            Degraded SQS ({row._sqsDegraded.length})
           </div>
-          {row._sqsDegraded.map((d, i) => (
-            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginBottom: '1px', fontSize: '10.5px' }}>
-              <span style={{ color: '#6B736B' }}>{formatSensorName(d.sensor)}</span>
-              <span style={{ fontWeight: 600, color: '#BF360C', fontVariantNumeric: 'tabular-nums' }}>{(d.sqs * 100).toFixed(0)}%</span>
-            </div>
-          ))}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
+            {row._sqsDegraded.map((d, i) => (
+              <span key={i} style={{
+                fontSize: '9.5px', padding: '1px 6px', borderRadius: '4px',
+                background: 'rgba(191,54,12,0.08)', border: '1px solid rgba(191,54,12,0.2)',
+                color: '#BF360C', fontWeight: 500, whiteSpace: 'nowrap',
+              }}>
+                {formatSensorName(d.sensor)} {(d.sqs * 100).toFixed(0)}%
+              </span>
+            ))}
+          </div>
         </div>
       )}
     </div>
   );
 };
 
-function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMode, lastNHours, startTime, endTime, onZoomChange, onZoomReset, isZoomed }) {
-  const [subsystems, setSubsystems] = useState([]);
+function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selectedDay, isLatestMode, lastNHours, startTime, endTime, onZoomChange, onZoomReset, isZoomed, subsystems: subsystemsProp }) {
+  const [alarmView, setAlarmView] = useState('minute');
+  const subsystems = subsystemsProp || [];
   const [selectedSystem, setSelectedSystem] = useState(null);
   const [qualityData, setQualityData] = useState(null);
+  const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [visibleSensors, setVisibleSensors] = useState({});
   const [activeMetric, setActiveMetric] = useState('a');
   const [viewMode, setViewMode] = useState('subsystem'); // 'subsystem' or 'sensor'
+  const [showAlarms, setShowAlarms] = useState(true);
 
 
   const [refAreaLeft, setRefAreaLeft] = useState(null);
   const [refAreaRight, setRefAreaRight] = useState(null);
+  const qualityCacheRef = useRef({});
+  const isDraggingRef = useRef(false);
+  const dragStartRef = useRef(null);
 
   useEffect(() => {
-    getBetaSubsystems().then(res => {
-      const subs = res.data.subsystems || [];
-      setSubsystems(subs);
-      if (subs.length > 0 && !selectedSystem) setSelectedSystem(subs[0].system_id);
-    }).catch(() => {});
-  }, [selectedSystem]);
+    if (subsystems.length > 0 && !selectedSystem) setSelectedSystem(subsystems[0].system_id);
+  }, [subsystems, selectedSystem]);
 
   const loadQuality = useCallback(async (systemId) => {
     if (!systemId) return;
+    // Use cached data if available for instant tab switching
+    if (qualityCacheRef.current[systemId]) {
+      const cached = qualityCacheRef.current[systemId];
+      setQualityData(cached);
+      const vis = {};
+      (cached.sensors || []).forEach((s) => { vis[s] = true; });
+      setVisibleSensors(vis);
+      return;
+    }
     setLoading(true);
     try {
       const res = await getBetaSensorQuality(systemId, 1);
+      qualityCacheRef.current[systemId] = res.data;
       setQualityData(res.data);
       const vis = {};
       (res.data.sensors || []).forEach((s) => { vis[s] = true; });
@@ -177,6 +286,19 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
   useEffect(() => {
     if (selectedSystem) loadQuality(selectedSystem);
   }, [selectedSystem, loadQuality]);
+
+  useEffect(() => {
+    if (!showAlarms) return;
+    let cancelled = false;
+    getBetaAlerts({ alarm_view: alarmView })
+      .then((res) => {
+        if (!cancelled) setAlerts(res.data.alerts || []);
+      })
+      .catch(() => {
+        if (!cancelled) setAlerts([]);
+      });
+    return () => { cancelled = true; };
+  }, [alarmView, showAlarms]);
 
   const toggleSensor = (sensor) => {
     setVisibleSensors((prev) => {
@@ -246,28 +368,67 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
 
   const chartData = viewMode === 'subsystem' ? subsystemChartData : sensorChartData;
 
+  const findClosestIdx = useCallback((targetTs, rows) => {
+    if (!rows.length) return null;
+    const target = new Date(targetTs).getTime();
+    let best = 0;
+    let bestDiff = Math.abs(new Date(rows[0].fullTs).getTime() - target);
+    for (let i = 1; i < rows.length; i++) {
+      const diff = Math.abs(new Date(rows[i].fullTs).getTime() - target);
+      if (diff < bestDiff) {
+        best = i;
+        bestDiff = diff;
+      }
+    }
+    return rows[best]._idx;
+  }, []);
+
   // Downtime bands from API
   const downtimeBands = useMemo(() => {
     if (!qualityData?.downtime_bands?.length || !chartData.length) return [];
     const dayFilter = selectedDay || '';
-    const findIdx = (targetTs) => {
-      if (!chartData.length) return null;
-      const target = new Date(targetTs).getTime();
-      let best = 0, bestDiff = Math.abs(new Date(chartData[0].fullTs).getTime() - target);
-      for (let i = 1; i < chartData.length; i++) {
-        const diff = Math.abs(new Date(chartData[i].fullTs).getTime() - target);
-        if (diff < bestDiff) { best = i; bestDiff = diff; }
-      }
-      return chartData[best]._idx;
-    };
     return qualityData.downtime_bands
       .filter((b) => {
         if (!dayFilter) return true;
         return String(b.start).substring(0, 10) === dayFilter;
       })
-      .map((b) => ({ start: findIdx(b.start), end: findIdx(b.end) }))
+      .map((b) => ({ start: findClosestIdx(b.start, chartData), end: findClosestIdx(b.end, chartData) }))
       .filter((b) => b.start !== null && b.end !== null);
-  }, [qualityData, chartData, selectedDay]);
+  }, [qualityData, chartData, selectedDay, findClosestIdx]);
+
+  const alarmBands = useMemo(() => {
+    if (!alerts?.length || !chartData.length || !selectedSystem) return [];
+    const sysAlerts = alerts.filter((a) => a.class === selectedSystem);
+    if (!sysAlerts.length) return [];
+    const dayFilter = selectedDay || '';
+    return sysAlerts
+      .filter((a) => {
+        if (!dayFilter) return true;
+        const aStart = String(a.start_ts || '').substring(0, 10);
+        const aEnd = String(a.end_ts || '').substring(0, 10);
+        return aStart === dayFilter || aEnd === dayFilter;
+      })
+      .map((a) => ({
+        start: findClosestIdx(a.start_ts, chartData),
+        end: findClosestIdx(a.end_ts, chartData),
+        severity: a.severity || 'MEDIUM',
+        minute_count: a.minute_count || 1,
+        severity_mix: a.severity_mix || '',
+        high_count: a.high_count || 0,
+        medium_count: a.medium_count || 0,
+        low_count: a.low_count || 0,
+        view_type: a.view_type || alarmView,
+        rawStart: a.start_ts,
+        rawEnd: a.end_ts,
+      }))
+      .filter((b) => b.start !== null && b.end !== null)
+      .map((b) => {
+        if (b.start === b.end) {
+          return { ...b, start: b.start - 0.45, end: b.end + 0.45 };
+        }
+        return b;
+      });
+  }, [alerts, chartData, selectedDay, selectedSystem, alarmView, findClosestIdx]);
 
   // Inline downtime fallback
   const inlineDowntimeBands = useMemo(() => {
@@ -284,8 +445,13 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
   }, [chartData, downtimeBands]);
 
   const allDowntimeBands = downtimeBands.length > 0 ? downtimeBands : inlineDowntimeBands;
+  const visibleAlarmBands = showAlarms ? alarmBands : [];
 
   const sensors = qualityData?.sensors || [];
+  const hasHighAlarms = visibleAlarmBands.some((band) => band.severity === 'HIGH');
+  const hasMediumAlarms = visibleAlarmBands.some((band) => band.severity === 'MEDIUM');
+  const hasLowAlarms = visibleAlarmBands.some((band) => band.severity === 'LOW');
+  const hasMixedAlarms = visibleAlarmBands.some((band) => band.severity === 'MIXED');
 
   // Y-domain for sensor view (Engine A/B only, SQS is shown as heatstrip)
   const sensorYDomain = useMemo(() => {
@@ -346,15 +512,25 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
   }, [chartData]);
 
   const handleZoomMouseDown = useCallback((e) => {
-    if (e?.activeLabel != null) setRefAreaLeft(e.activeLabel);
+    if (e?.activeLabel != null) {
+      setRefAreaLeft(e.activeLabel);
+      dragStartRef.current = e.activeLabel;
+      isDraggingRef.current = false;
+    }
   }, []);
 
   const handleZoomMouseMove = useCallback((e) => {
-    if (refAreaLeft != null && e?.activeLabel != null) setRefAreaRight(e.activeLabel);
+    if (refAreaLeft != null && e?.activeLabel != null) {
+      setRefAreaRight(e.activeLabel);
+      if (dragStartRef.current != null && e.activeLabel !== dragStartRef.current) {
+        isDraggingRef.current = true;
+      }
+    }
   }, [refAreaLeft]);
 
   const handleZoomMouseUp = useCallback(() => {
     if (refAreaLeft != null && refAreaRight != null && refAreaLeft !== refAreaRight) {
+      isDraggingRef.current = true;
       const left = Math.min(refAreaLeft, refAreaRight);
       const right = Math.max(refAreaLeft, refAreaRight);
       if (onZoomChange) {
@@ -367,7 +543,40 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
     }
     setRefAreaLeft(null);
     setRefAreaRight(null);
+    dragStartRef.current = null;
   }, [refAreaLeft, refAreaRight, onZoomChange, chartData]);
+
+  const handleChartClick = useCallback((e) => {
+    if (isDraggingRef.current) { isDraggingRef.current = false; return; }
+    if (!showAlarms || !e || !e.activePayload || !e.activePayload.length || !onSelectAlert || !alerts?.length) return;
+    const idx = e.activePayload[0]?.payload?._idx;
+    if (idx == null) return;
+    const band = visibleAlarmBands.find((candidate) => idx >= candidate.start && idx <= candidate.end);
+    if (!band) return;
+
+    const match = alerts.find((alert) => {
+      const alertStart = String(alert.start_ts || '').substring(0, 19);
+      const bandStart = String(band.rawStart || '').substring(0, 19);
+      const alertEnd = String(alert.end_ts || '').substring(0, 19);
+      const bandEnd = String(band.rawEnd || '').substring(0, 19);
+      return alert.class === selectedSystem && alertStart === bandStart && alertEnd === bandEnd;
+    });
+    if (match) {
+      onSelectAlert(match);
+      return;
+    }
+
+    const row = e.activePayload[0]?.payload;
+    const pointTs = row?.fullTs ? new Date(String(row.fullTs)).getTime() : null;
+    if (pointTs == null || Number.isNaN(pointTs)) return;
+    const overlapMatch = alerts.find((alert) => {
+      if (alert.class !== selectedSystem) return false;
+      const start = new Date(String(alert.start_ts)).getTime();
+      const end = new Date(String(alert.end_ts)).getTime();
+      return !Number.isNaN(start) && !Number.isNaN(end) && start <= pointTs && pointTs <= end;
+    });
+    if (overlapMatch) onSelectAlert(overlapMatch);
+  }, [showAlarms, onSelectAlert, alerts, visibleAlarmBands, selectedSystem]);
 
   const hasSubsystemData = subsystemChartData.length > 0;
   const hasSensorData = sensorChartData.length > 0;
@@ -376,7 +585,9 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
     <GlassCard delay={0.4} style={{ marginTop: '8px' }} intensity="strong">
       <div style={styles.heading}>
         Sensor Quality
-        <InfoTooltip text="Subsystem-level system score and adaptive threshold by default. Switch to sensor breakdown to see per-sensor SQS, Engine A, and Engine B scores." />
+        <InfoTooltip text={alarmView === 'span'
+          ? 'Subsystem-level system score and adaptive threshold by default. Switch to sensor breakdown to see per-sensor SQS, Engine A, and Engine B scores. Use Show Alarms to overlay dynamic contiguous alarm spans on the chart.'
+          : 'Subsystem-level system score and adaptive threshold by default. Switch to sensor breakdown to see per-sensor SQS, Engine A, and Engine B scores. Use Show Alarms to overlay source minute-level system alarms on the chart.'} />
         {filterLabel && <span style={{ ...filterBadgeStyle, cursor: 'pointer' }} onClick={onFilterClick}>{filterLabel}</span>}
       </div>
 
@@ -453,6 +664,30 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
                   <div style={{ width: '14px', height: '8px', background: '#9E9E9E', borderRadius: '2px', border: '1px solid #757575', opacity: 0.7 }} />
                   <span style={{ fontWeight: 600 }}>Downtime</span>
                 </div>
+                {hasHighAlarms && (
+                  <div style={{ ...styles.legendItem, cursor: 'default' }}>
+                    <div style={{ width: '14px', height: '8px', background: getAlarmStyle('HIGH').swatchBg, borderRadius: '2px', border: getAlarmStyle('HIGH').swatchBorder }} />
+                    <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'High Span' : 'High Alarm'}</span>
+                  </div>
+                )}
+                {hasMediumAlarms && (
+                  <div style={{ ...styles.legendItem, cursor: 'default' }}>
+                    <div style={{ width: '14px', height: '8px', background: getAlarmStyle('MEDIUM').swatchBg, borderRadius: '2px', border: getAlarmStyle('MEDIUM').swatchBorder }} />
+                    <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'Medium Span' : 'Medium Alarm'}</span>
+                  </div>
+                )}
+                {hasLowAlarms && (
+                  <div style={{ ...styles.legendItem, cursor: 'default' }}>
+                    <div style={{ width: '14px', height: '8px', background: getAlarmStyle('LOW').swatchBg, borderRadius: '2px', border: getAlarmStyle('LOW').swatchBorder }} />
+                    <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'Low Span' : 'Low Alarm'}</span>
+                  </div>
+                )}
+                {hasMixedAlarms && (
+                  <div style={{ ...styles.legendItem, cursor: 'default' }}>
+                    <div style={{ width: '14px', height: '8px', background: getAlarmStyle('MIXED').swatchBg, borderRadius: '2px', border: getAlarmStyle('MIXED').swatchBorder }} />
+                    <span style={{ fontWeight: 600 }}>Mixed Span</span>
+                  </div>
+                )}
                 <div style={{ ...styles.legendItem, cursor: 'default', marginLeft: '4px' }}>
                   <div style={{ width: '14px', height: '3px', background: SQS_COLOR, borderRadius: '2px' }} />
                   <span style={{ fontWeight: 600 }}>Avg SQS %</span>
@@ -475,10 +710,56 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
                   <div style={{ width: '14px', height: '8px', background: '#9E9E9E', borderRadius: '2px', border: '1px solid #757575', opacity: 0.7 }} />
                   <span style={{ fontWeight: 600 }}>Downtime</span>
                 </div>
+                {hasHighAlarms && (
+                  <div style={{ ...styles.legendItem, cursor: 'default' }}>
+                    <div style={{ width: '14px', height: '8px', background: getAlarmStyle('HIGH').swatchBg, borderRadius: '2px', border: getAlarmStyle('HIGH').swatchBorder }} />
+                    <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'High Span' : 'High Alarm'}</span>
+                  </div>
+                )}
+                {hasMediumAlarms && (
+                  <div style={{ ...styles.legendItem, cursor: 'default' }}>
+                    <div style={{ width: '14px', height: '8px', background: getAlarmStyle('MEDIUM').swatchBg, borderRadius: '2px', border: getAlarmStyle('MEDIUM').swatchBorder }} />
+                    <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'Medium Span' : 'Medium Alarm'}</span>
+                  </div>
+                )}
+                {hasLowAlarms && (
+                  <div style={{ ...styles.legendItem, cursor: 'default' }}>
+                    <div style={{ width: '14px', height: '8px', background: getAlarmStyle('LOW').swatchBg, borderRadius: '2px', border: getAlarmStyle('LOW').swatchBorder }} />
+                    <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'Low Span' : 'Low Alarm'}</span>
+                  </div>
+                )}
+                {hasMixedAlarms && (
+                  <div style={{ ...styles.legendItem, cursor: 'default' }}>
+                    <div style={{ width: '14px', height: '8px', background: getAlarmStyle('MIXED').swatchBg, borderRadius: '2px', border: getAlarmStyle('MIXED').swatchBorder }} />
+                    <span style={{ fontWeight: 600 }}>Mixed Span</span>
+                  </div>
+                )}
               </div>
             )}
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+              <div
+                onClick={() => setShowAlarms((current) => !current)}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '6px',
+                  fontSize: '10px', padding: '4px 12px', borderRadius: '20px', cursor: 'pointer',
+                  border: showAlarms ? '1.5px solid rgba(230,81,0,0.34)' : '1px solid rgba(203,230,200,0.6)',
+                  background: showAlarms ? 'rgba(255,167,38,0.12)' : 'rgba(255,255,255,0.6)',
+                  color: showAlarms ? '#9A6A00' : '#8A928A', fontWeight: 600, transition: 'all 0.2s',
+                }}
+              >
+                <span>Show Alarms</span>
+              </div>
+              {showAlarms && (
+                <>
+                  <div style={controlPillStyle(alarmView === 'minute')} onClick={() => setAlarmView('minute')}>
+                    Minute Windows
+                  </div>
+                  <div style={controlPillStyle(alarmView === 'span')} onClick={() => setAlarmView('span')}>
+                    Alarm Spans
+                  </div>
+                </>
+              )}
               <div style={{
                 display: 'inline-flex', alignItems: 'center', gap: '4px',
                 fontSize: '10px', padding: '4px 12px', borderRadius: '20px',
@@ -507,6 +788,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
                 onMouseDown={handleZoomMouseDown}
                 onMouseMove={handleZoomMouseMove}
                 onMouseUp={handleZoomMouseUp}
+                onClick={handleChartClick}
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,230,200,0.4)" />
                 <XAxis
@@ -530,7 +812,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
                     label={{ value: 'SQS %', angle: 90, position: 'insideRight', offset: 10, style: { fontSize: 9, fill: SQS_COLOR } }}
                   />
                 )}
-                <Tooltip content={<CustomTooltip downtimeBands={allDowntimeBands} />} />
+                <Tooltip content={<CustomTooltip downtimeBands={allDowntimeBands} alarmBands={visibleAlarmBands} alarmView={alarmView} />} wrapperStyle={{ zIndex: 1000, overflow: 'visible', pointerEvents: 'none' }} />
 
                 {/* Downtime bands - prominent solid gray */}
                 {allDowntimeBands.map((band, i) => (
@@ -545,6 +827,22 @@ function SensorQualityGrid({ filterLabel, onFilterClick, selectedDay, isLatestMo
                     strokeDasharray="6 3"
                   />
                 ))}
+
+                {visibleAlarmBands.map((band, i) => {
+                  const alarmStyle = getAlarmStyle(band.severity);
+                  return (
+                    <ReferenceArea
+                      key={`alarm-${i}`}
+                      x1={band.start}
+                      x2={band.end}
+                      yAxisId="left"
+                      fill={alarmStyle.areaFill}
+                      fillOpacity={1}
+                      stroke={alarmStyle.areaStroke}
+                      strokeWidth={1.5}
+                    />
+                  );
+                })}
 
                 {/* Subsystem view: System Score + Adaptive Threshold */}
                 {viewMode === 'subsystem' && (
