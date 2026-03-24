@@ -251,7 +251,7 @@ const styles = {
   riskBarFill: (score, severity) => ({
     height: '100%',
     borderRadius: '2px',
-    width: `${Math.min((score || 0) * 100, 100)}%`,
+    width: `${Math.min(((score || 0) / ((score || 0) + 1)) * 100, 100)}%`,
     background: severity === 'HIGH'
       ? 'linear-gradient(90deg, rgba(239,83,80,0.88), #D32F2F)'
       : severity === 'MEDIUM'
@@ -565,6 +565,7 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay }) {
                 const displaySeverity = getAlertDisplaySeverity(alert);
                 const minuteCount = Number(alert.minute_count || 1);
                 const severityMixLabel = getSeverityMixLabel(alert);
+                const isSpanView = alarmView === 'span';
                 return (
                   <motion.div
                     key={key}
@@ -608,12 +609,18 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay }) {
                       </>
                     )}
                     <div style={styles.detail}>
-                      <span style={styles.detailLabel}>Peak Risk</span>
+                      <span style={styles.detailLabel}>{isSpanView ? 'Peak Contribution Sum' : 'Contribution Sum'}</span>
                       <span style={styles.detailValue}>{formatScore(alert.max_score)}</span>
                     </div>
+                    {isSpanView && (
+                      <div style={styles.detail}>
+                        <span style={styles.detailLabel}>Mean Contribution Sum</span>
+                        <span style={styles.detailValue}>{formatScore(alert.mean_score)}</span>
+                      </div>
+                    )}
                     <div style={styles.detail}>
-                      <span style={styles.detailLabel}>Mean Risk</span>
-                      <span style={styles.detailValue}>{formatScore(alert.mean_score)}</span>
+                      <span style={styles.detailLabel}>Top Sensor Contribution</span>
+                      <span style={styles.detailValue}>{formatScore(alert.sensor_max_score)}</span>
                     </div>
                     <div style={styles.detail}>
                       <span style={styles.detailLabel}>Primary Sensor</span>

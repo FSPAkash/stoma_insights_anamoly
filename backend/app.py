@@ -928,7 +928,6 @@ def _beta_build_timestamp_alert_tables():
 
     alarms_df, alarms_ts = beta_load_csv_with_ts("detailed_subsystem_alarms.csv")
     rankings_df, rankings_ts = beta_load_csv_with_ts("detailed_sensor_rankings.csv")
-    scores_df, scores_ts = beta_load_csv_with_ts("detailed_system_sensor_scores.csv")
 
     if alarms_df.empty or not alarms_ts or alarms_ts not in alarms_df.columns:
         return pd.DataFrame(columns=alert_cols), pd.DataFrame(columns=sensor_cols)
@@ -942,12 +941,6 @@ def _beta_build_timestamp_alert_tables():
         rankings_df[rankings_ts] = rankings_df[rankings_ts].astype(str)
         rankings_indexed = rankings_df.set_index(rankings_ts, drop=False)
 
-    scores_indexed = pd.DataFrame()
-    if not scores_df.empty and scores_ts and scores_ts in scores_df.columns:
-        scores_df = scores_df.copy()
-        scores_df[scores_ts] = scores_df[scores_ts].astype(str)
-        scores_indexed = scores_df.set_index(scores_ts, drop=False)
-
     alerts_rows = []
     sensor_rows = []
     alarm_cols = sorted([col for col in alarms_df.columns if col.endswith("__Alarm") and col != "downtime_flag"])
@@ -955,7 +948,6 @@ def _beta_build_timestamp_alert_tables():
     for alarm_col in alarm_cols:
         sys_label = alarm_col.replace("__Alarm", "")
         level_col = f"{sys_label}__Score_Level_At_Alarm"
-        score_col = f"{sys_label}__System_Score"
 
         active_rows = alarms_df[alarms_df[alarm_col] == 1].copy()
         if active_rows.empty:
@@ -966,7 +958,6 @@ def _beta_build_timestamp_alert_tables():
             severity = _beta_normalize_alarm_level(alarm_row.get(level_col))
 
             ranking_row = _beta_lookup_indexed_row(rankings_indexed, ts_str)
-            score_row = _beta_lookup_indexed_row(scores_indexed, ts_str)
 
             contribution_pairs = []
             if ranking_row is not None:
@@ -1001,10 +992,8 @@ def _beta_build_timestamp_alert_tables():
                 affected_sensor_count = 0
                 affected_sensors = "UNKNOWN"
 
-            score_val = None
-            if score_row is not None and score_col in score_row.index:
-                score_val = pd.to_numeric(pd.Series([score_row.get(score_col)]), errors="coerce").iloc[0]
-                score_val = None if pd.isna(score_val) else float(score_val)
+            # Use raw contribution sum instead of normalized System_Score
+            score_val = sum(score for _, score in contribution_pairs) if contribution_pairs else None
 
             alerts_rows.append({
                 "view_type": "minute",
@@ -1131,6 +1120,8 @@ def _beta_build_span_alert_tables():
                     sensor_high_count = int((sensor_group["severity"] == "HIGH").sum())
                     sensor_medium_count = int((sensor_group["severity"] == "MEDIUM").sum())
                     sensor_low_count = int((sensor_group["severity"] == "LOW").sum())
+                    sensor_scores = pd.to_numeric(sensor_group["sensor_peak_score"], errors="coerce")
+                    active_scores = sensor_scores.dropna()
                     sensor_agg_rows.append({
                         "sensor": sensor_id,
                         "minute_count": int(len(sensor_group)),
@@ -1139,10 +1130,8 @@ def _beta_build_span_alert_tables():
                         "high_count": sensor_high_count,
                         "medium_count": sensor_medium_count,
                         "low_count": sensor_low_count,
-                        "sensor_peak_score": float(pd.to_numeric(sensor_group["sensor_peak_score"], errors="coerce").max())
-                        if not sensor_group["sensor_peak_score"].empty else None,
-                        "sensor_mean_score": float(pd.to_numeric(sensor_group["sensor_mean_score"], errors="coerce").mean())
-                        if not sensor_group["sensor_mean_score"].empty else None,
+                        "sensor_peak_score": float(active_scores.max()) if not active_scores.empty else None,
+                        "sensor_mean_score": float(active_scores.mean()) if not active_scores.empty else 0.0,
                     })
 
             sensor_agg_rows.sort(

@@ -221,6 +221,7 @@ function BetaAlertDetailModal({ alert, onClose }) {
 
   if (!alert) return null;
   const currentView = alert.view_type || 'minute';
+  const isSpanView = currentView === 'span';
 
   const severityStyle = alert.severity === 'HIGH'
     ? { bg: '#FFCDD2', text: '#C62828' }
@@ -262,7 +263,7 @@ function BetaAlertDetailModal({ alert, onClose }) {
                 {currentView === 'span' ? 'System Alarm Span Detail' : 'System Alarm Detail'}
                 <InfoTooltip text={currentView === 'span'
                   ? 'This detail view summarizes the selected dynamic alarm span, including how many minute-level alerts it contains, the severity mix inside the span, and the aggregated sensor contributions across that span.'
-                  : 'This detail view summarizes the selected system alarm row, including its severity, leading sensor signals, and ranked sensor contributions at that alarm timestamp.'} />
+                  : 'This detail view summarizes the selected system alarm row. Risk values are subsystem-level scores for that minute, while sensor contribution values show relative sensor influence and do not sum to the risk score.'} />
               </div>
               <div style={styles.subtitle}>
                 {displayWindow}
@@ -286,28 +287,33 @@ function BetaAlertDetailModal({ alert, onClose }) {
           <div style={styles.gaugeRow}>
             <GaugeWidget
               value={alert.max_score}
-              label="Peak Risk Score"
-              color={alert.max_score >= 0.8 ? '#EF5350' : '#FFA726'}
+              max={Math.max(alert.max_score || 1, alert.sensor_max_score || 1)}
+              label={isSpanView ? 'Peak Contribution Sum' : 'Contribution Sum'}
+              color={alert.severity === 'HIGH' ? '#EF5350' : alert.severity === 'MEDIUM' ? '#FFA726' : '#4CAF50'}
               size={120}
-              tooltip="Subsystem risk score at this alarm timestamp."
+              tooltip={isSpanView
+                ? 'Highest raw sum of all sensor contributions reached anywhere in the alarm span.'
+                : 'Raw sum of all sensor contributions at the selected alarm minute.'}
             />
-            <GaugeWidget
-              value={alert.mean_score}
-              label="Mean Risk Score"
-              color={alert.mean_score >= 0.8 ? '#EF5350' : alert.mean_score >= 0.55 ? '#FFA726' : '#4CAF50'}
-              size={120}
-              tooltip={currentView === 'span'
-                ? 'For alarm spans, this is the mean subsystem risk score across the span.'
-                : 'For timestamp-level alarm rows, this matches the risk score at the alarm timestamp.'}
-            />
+            {isSpanView && (
+              <GaugeWidget
+                value={alert.mean_score}
+                max={Math.max(alert.max_score || 1, alert.sensor_max_score || 1)}
+                label="Mean Contribution Sum"
+                color={alert.severity === 'HIGH' ? '#EF5350' : alert.severity === 'MEDIUM' ? '#FFA726' : '#4CAF50'}
+                size={120}
+                tooltip="Mean raw sum of all sensor contributions across the alarm span."
+              />
+            )}
             <GaugeWidget
               value={alert.sensor_max_score}
-              label="Top Sensor Score"
+              max={Math.max(alert.max_score || 1, alert.sensor_max_score || 1)}
+              label="Top Sensor Contribution"
               color="#388E3C"
               size={120}
               tooltip={currentView === 'span'
-                ? 'Peak contribution from the highest-ranked sensor across the span.'
-                : 'Contribution from the highest-ranked sensor at the alarm timestamp.'}
+                ? 'Peak individual sensor contribution across the span (sigma-scaled residual).'
+                : 'Top individual sensor contribution at the selected alarm minute (sigma-scaled residual).'}
             />
           </div>
 
@@ -333,15 +339,17 @@ function BetaAlertDetailModal({ alert, onClose }) {
               <div style={styles.metaValue}>{currentView === 'span' ? (alert.minute_count || 1) : alert.affected_sensor_count}</div>
             </div>
             <div style={styles.metaItem}>
-              <div style={styles.metaLabel}>Peak Risk</div>
+              <div style={styles.metaLabel}>{isSpanView ? 'Peak Contribution Sum' : 'Contribution Sum'}</div>
               <div style={styles.metaValue}>{formatScore(alert.max_score)}</div>
             </div>
+            {isSpanView && (
+              <div style={styles.metaItem}>
+                <div style={styles.metaLabel}>Mean Contribution Sum</div>
+                <div style={styles.metaValue}>{formatScore(alert.mean_score)}</div>
+              </div>
+            )}
             <div style={styles.metaItem}>
-              <div style={styles.metaLabel}>Mean Risk</div>
-              <div style={styles.metaValue}>{formatScore(alert.mean_score)}</div>
-            </div>
-            <div style={styles.metaItem}>
-              <div style={styles.metaLabel}>{currentView === 'span' ? 'Severity Mix' : 'Sensor Peak Score'}</div>
+              <div style={styles.metaLabel}>{currentView === 'span' ? 'Severity Mix' : 'Top Sensor Contribution'}</div>
               <div style={styles.metaValue}>{currentView === 'span' ? (severityMixLabel || '--') : formatScore(alert.sensor_max_score)}</div>
             </div>
             {currentView === 'span' && (
@@ -352,7 +360,7 @@ function BetaAlertDetailModal({ alert, onClose }) {
             )}
             {currentView === 'span' && (
               <div style={styles.metaItem}>
-                <div style={styles.metaLabel}>Sensor Peak Score</div>
+                <div style={styles.metaLabel}>Top Sensor Contribution</div>
                 <div style={styles.metaValue}>{formatScore(alert.sensor_max_score)}</div>
               </div>
             )}
@@ -373,8 +381,8 @@ function BetaAlertDetailModal({ alert, onClose }) {
               <div style={styles.sectionTitle}>
                 Sensor-Level Alerts ({sensorAlerts.length})
                 <InfoTooltip text={currentView === 'span'
-                  ? 'These rows aggregate sensor involvement across the selected alarm span. Sensors are ranked by their peak and mean contribution across the span.'
-                  : 'These rows show the sensors involved in the selected system alarm timestamp. Sensors are ranked by their contribution at that timestamp.'} />
+                  ? 'These rows aggregate sensor involvement across the selected alarm span. Peak contribution is the highest minute-level contribution, and mean contribution is averaged over the full span.'
+                  : 'These rows show per-sensor contribution values for the selected alarm minute. These contribution values are ranked relative influences and are not expected to sum to the subsystem risk score.'} />
               </div>
 
               {sensorAlerts.length === 0 ? (
@@ -386,8 +394,8 @@ function BetaAlertDetailModal({ alert, onClose }) {
                       <tr>
                         <th style={styles.th}>Rank</th>
                         <th style={styles.th}>Sensor</th>
-                        <th style={styles.th}>Peak Score</th>
-                        <th style={styles.th}>Mean Score</th>
+                        <th style={styles.th}>{isSpanView ? 'Peak Contribution' : 'Contribution'}</th>
+                        {isSpanView && <th style={styles.th}>Mean Contribution</th>}
                         <th style={styles.th}>Severity</th>
                         <th style={styles.th}>Class</th>
                       </tr>
@@ -405,7 +413,7 @@ function BetaAlertDetailModal({ alert, onClose }) {
                             <td style={styles.td}>#{sensorAlert.sensor_rank}</td>
                             <td style={{ ...styles.td, fontWeight: 500 }}>{formatSensorName(sensorAlert.sensor)}</td>
                             <td style={styles.td}>{formatScore(sensorAlert.sensor_peak_score)}</td>
-                            <td style={styles.td}>{formatScore(sensorAlert.sensor_mean_score)}</td>
+                            {isSpanView && <td style={styles.td}>{formatScore(sensorAlert.sensor_mean_score)}</td>}
                             <td style={styles.td}>
                               <span style={{
                                 padding: '2px 8px',
