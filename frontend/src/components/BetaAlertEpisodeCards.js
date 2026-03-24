@@ -251,7 +251,7 @@ const styles = {
   riskBarFill: (score, severity) => ({
     height: '100%',
     borderRadius: '2px',
-    width: `${Math.min(((score || 0) / ((score || 0) + 1)) * 100, 100)}%`,
+    width: `${Math.min((score || 0) * 100, 100)}%`,
     background: severity === 'HIGH'
       ? 'linear-gradient(90deg, rgba(239,83,80,0.88), #D32F2F)'
       : severity === 'MEDIUM'
@@ -609,26 +609,50 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay }) {
                       </>
                     )}
                     <div style={styles.detail}>
-                      <span style={styles.detailLabel}>{isSpanView ? 'Peak Contribution Sum' : 'Contribution Sum'}</span>
-                      <span style={styles.detailValue}>{formatScore(alert.max_score)}</span>
+                      <span style={styles.detailLabel}>{isSpanView ? 'Peak Risk Score' : 'Risk Score'}</span>
+                      <span style={styles.detailValue}>
+                        {formatScore(isSpanView ? alert.peak_risk_score : alert.risk_score)}
+                        {alert.adaptive_threshold != null && (
+                          <span style={{ color: '#8A928A', fontWeight: 400, fontSize: '11px' }}>
+                            {' / '}{formatScore(alert.adaptive_threshold)} threshold
+                          </span>
+                        )}
+                      </span>
                     </div>
-                    {isSpanView && (
+                    {alert.system_confidence != null && (
                       <div style={styles.detail}>
-                        <span style={styles.detailLabel}>Mean Contribution Sum</span>
-                        <span style={styles.detailValue}>{formatScore(alert.mean_score)}</span>
+                        <span style={styles.detailLabel}>Confidence</span>
+                        <span style={styles.detailValue}>{((alert.system_confidence || 0) * 100).toFixed(0)}%</span>
                       </div>
                     )}
-                    <div style={styles.detail}>
-                      <span style={styles.detailLabel}>Top Sensor Contribution</span>
-                      <span style={styles.detailValue}>{formatScore(alert.sensor_max_score)}</span>
-                    </div>
+                    {alert.avg_sqs != null && (
+                      <div style={styles.detail}>
+                        <span style={styles.detailLabel}>Signal Quality</span>
+                        <span style={styles.detailValue}>{((alert.avg_sqs || 0) * 100).toFixed(0)}%</span>
+                      </div>
+                    )}
+                    {(alert.reliable_count > 0 || alert.degraded_count > 0) && (
+                      <div style={styles.detail}>
+                        <span style={styles.detailLabel}>Behavior</span>
+                        <span style={styles.detailValue}>
+                          {alert.reliable_count > 0 && <span style={{ color: '#2E7D32' }}>{alert.reliable_count} Reliable</span>}
+                          {alert.reliable_count > 0 && alert.degraded_count > 0 && ', '}
+                          {alert.degraded_count > 0 && <span style={{ color: '#E65100' }}>{alert.degraded_count} Degraded</span>}
+                        </span>
+                      </div>
+                    )}
                     <div style={styles.detail}>
                       <span style={styles.detailLabel}>Primary Sensor</span>
                       <span style={styles.detailValue}>{formatSensorName(alert.sensor_id)}</span>
                     </div>
 
                     <div style={styles.riskBar}>
-                      <div style={styles.riskBarFill(alert.max_score, displaySeverity)} />
+                      <div style={styles.riskBarFill(
+                        alert.adaptive_threshold > 0
+                          ? (isSpanView ? alert.peak_risk_score : alert.risk_score) / alert.adaptive_threshold
+                          : 0,
+                        displaySeverity
+                      )} />
                     </div>
 
                     <div style={{ marginTop: '10px', display: 'flex', flexWrap: 'wrap', gap: '2px' }}>

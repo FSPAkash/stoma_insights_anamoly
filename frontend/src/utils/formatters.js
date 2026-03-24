@@ -28,10 +28,10 @@ export const formatTimestamp = (ts) => {
 export const formatDuration = (minutes) => {
   if (minutes === null || minutes === undefined) return '--';
   const m = Number(minutes);
-  if (m < 60) return `${Math.round(m)}m`;
+  if (m < 60) return `${Math.round(m)} min`;
   const h = Math.floor(m / 60);
   const rem = Math.round(m % 60);
-  return rem > 0 ? `${h}h ${rem}m` : `${h}h`;
+  return rem > 0 ? `${h}h ${rem} min` : `${h}h`;
 };
 
 export const formatSensorName = (name) => {

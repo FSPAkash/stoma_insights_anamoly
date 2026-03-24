@@ -87,6 +87,7 @@ function InfoTooltip({ text }) {
       <span
         ref={triggerRef}
         className="tooltip-trigger"
+        style={{ marginLeft: '4px' }}
         onMouseEnter={handleEnter}
         onMouseLeave={handleLeave}
       >

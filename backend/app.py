@@ -917,17 +917,24 @@ def _beta_build_timestamp_alert_tables():
         "high_count", "medium_count", "low_count", "class",
         "sensor_id", "sensor_max_score", "sensor_mean_score",
         "affected_sensor_count", "affected_sensors", "max_score", "mean_score",
-        "threshold",
+        "risk_score", "peak_risk_score", "mean_risk_score", "adaptive_threshold",
+        "threshold", "system_confidence", "reliable_count", "degraded_count",
+        "avg_sqs", "sqs_good_count", "sqs_poor_count",
     ]
     sensor_cols = [
         "view_type", "start_ts", "end_ts", "duration_minutes", "minute_count", "severity", "severity_mix",
         "high_count", "medium_count", "low_count", "class",
         "sensor", "sensor_rank", "sensor_peak_score", "sensor_mean_score",
-        "alert_max_score", "alert_mean_score", "threshold",
+        "sensor_contribution_pct", "sensor_trust", "sensor_normal_minutes", "sensor_anomalous_minutes", "sensor_sqs",
+        "alert_max_score", "alert_mean_score",
+        "risk_score", "peak_risk_score", "mean_risk_score", "adaptive_threshold",
+        "threshold",
     ]
 
     alarms_df, alarms_ts = beta_load_csv_with_ts("detailed_subsystem_alarms.csv")
     rankings_df, rankings_ts = beta_load_csv_with_ts("detailed_sensor_rankings.csv")
+    scores_df, scores_ts = beta_load_csv_with_ts("detailed_system_sensor_scores.csv")
+    trust_df, trust_ts = beta_load_csv_with_ts("detailed_sensor_trust.csv")
 
     if alarms_df.empty or not alarms_ts or alarms_ts not in alarms_df.columns:
         return pd.DataFrame(columns=alert_cols), pd.DataFrame(columns=sensor_cols)
@@ -940,6 +947,18 @@ def _beta_build_timestamp_alert_tables():
         rankings_df = rankings_df.copy()
         rankings_df[rankings_ts] = rankings_df[rankings_ts].astype(str)
         rankings_indexed = rankings_df.set_index(rankings_ts, drop=False)
+
+    scores_indexed = pd.DataFrame()
+    if not scores_df.empty and scores_ts and scores_ts in scores_df.columns:
+        scores_df = scores_df.copy()
+        scores_df[scores_ts] = scores_df[scores_ts].astype(str)
+        scores_indexed = scores_df.set_index(scores_ts, drop=False)
+
+    trust_indexed = pd.DataFrame()
+    if not trust_df.empty and trust_ts and trust_ts in trust_df.columns:
+        trust_df = trust_df.copy()
+        trust_df[trust_ts] = trust_df[trust_ts].astype(str)
+        trust_indexed = trust_df.set_index(trust_ts, drop=False)
 
     alerts_rows = []
     sensor_rows = []
@@ -958,6 +977,51 @@ def _beta_build_timestamp_alert_tables():
             severity = _beta_normalize_alarm_level(alarm_row.get(level_col))
 
             ranking_row = _beta_lookup_indexed_row(rankings_indexed, ts_str)
+            score_row = _beta_lookup_indexed_row(scores_indexed, ts_str)
+            trust_row = _beta_lookup_indexed_row(trust_indexed, ts_str)
+
+            # Look up risk score, adaptive threshold, and system confidence from scores CSV
+            risk_score_val = None
+            adaptive_threshold_val = None
+            system_confidence_val = None
+            score_col = f"{sys_label}__System_Score"
+            threshold_col = f"{sys_label}__Adaptive_Threshold"
+            if score_row is not None:
+                if score_col in score_row.index:
+                    rv = pd.to_numeric(pd.Series([score_row.get(score_col)]), errors="coerce").iloc[0]
+                    risk_score_val = None if pd.isna(rv) else float(rv)
+                if threshold_col in score_row.index:
+                    tv = pd.to_numeric(pd.Series([score_row.get(threshold_col)]), errors="coerce").iloc[0]
+                    adaptive_threshold_val = None if pd.isna(tv) else float(tv)
+                confidence_col = f"{sys_label}__System_Confidence"
+                if confidence_col in score_row.index:
+                    cv = pd.to_numeric(pd.Series([score_row.get(confidence_col)]), errors="coerce").iloc[0]
+                    system_confidence_val = None if pd.isna(cv) else float(cv)
+
+            # Look up per-sensor trust from trust CSV
+            # Trust columns: {sys_label}__{sensor_id} -> "Reliable" or "Degraded"
+            sensor_trust_map = {}
+            if trust_row is not None:
+                prefix = f"{sys_label}__"
+                for col in trust_row.index:
+                    if col.startswith(prefix) and col != prefix.rstrip("_"):
+                        sensor_id_trust = col[len(prefix):]
+                        trust_val = trust_row.get(col)
+                        if isinstance(trust_val, str) and trust_val in ("Reliable", "Degraded"):
+                            sensor_trust_map[sensor_id_trust] = trust_val
+
+            # Look up per-sensor SQS from scores CSV
+            # SQS columns: {sys_label}__{sensor_id}__SQS -> float 0-1
+            sensor_sqs_map = {}
+            if score_row is not None:
+                prefix = f"{sys_label}__"
+                sqs_suffix = "__SQS"
+                for col in score_row.index:
+                    if col.startswith(prefix) and col.endswith(sqs_suffix):
+                        sensor_id_sqs = col[len(prefix):-len(sqs_suffix)]
+                        sv = pd.to_numeric(pd.Series([score_row.get(col)]), errors="coerce").iloc[0]
+                        if pd.notna(sv):
+                            sensor_sqs_map[sensor_id_sqs] = float(sv)
 
             contribution_pairs = []
             if ranking_row is not None:
@@ -995,6 +1059,19 @@ def _beta_build_timestamp_alert_tables():
             # Use raw contribution sum instead of normalized System_Score
             score_val = sum(score for _, score in contribution_pairs) if contribution_pairs else None
 
+            # Compute contribution percentages
+            total_contribution = sum(score for _, score in contribution_pairs) if contribution_pairs else 0
+
+            # Count trust statuses for affected sensors
+            reliable_count = sum(1 for sid, _ in contribution_pairs if sensor_trust_map.get(sid) == "Reliable")
+            degraded_count = sum(1 for sid, _ in contribution_pairs if sensor_trust_map.get(sid) == "Degraded")
+
+            # SQS stats for affected sensors
+            affected_sqs = [sensor_sqs_map[sid] for sid, _ in contribution_pairs if sid in sensor_sqs_map]
+            avg_sqs = float(sum(affected_sqs) / len(affected_sqs)) if affected_sqs else None
+            sqs_good_count = sum(1 for v in affected_sqs if v >= 0.8)
+            sqs_poor_count = sum(1 for v in affected_sqs if v < 0.8)
+
             alerts_rows.append({
                 "view_type": "minute",
                 "start_ts": ts_str,
@@ -1014,10 +1091,21 @@ def _beta_build_timestamp_alert_tables():
                 "affected_sensors": affected_sensors,
                 "max_score": score_val,
                 "mean_score": score_val,
+                "risk_score": risk_score_val,
+                "peak_risk_score": risk_score_val,
+                "mean_risk_score": risk_score_val,
+                "adaptive_threshold": adaptive_threshold_val,
                 "threshold": "ADAPTIVE",
+                "system_confidence": system_confidence_val,
+                "reliable_count": reliable_count,
+                "degraded_count": degraded_count,
+                "avg_sqs": round(avg_sqs, 3) if avg_sqs is not None else None,
+                "sqs_good_count": sqs_good_count,
+                "sqs_poor_count": sqs_poor_count,
             })
 
             for rank_idx, (sensor_id, sensor_score) in enumerate(contribution_pairs, start=1):
+                pct = (sensor_score / total_contribution * 100) if total_contribution > 0 else 0
                 sensor_rows.append({
                     "view_type": "minute",
                     "start_ts": ts_str,
@@ -1034,8 +1122,17 @@ def _beta_build_timestamp_alert_tables():
                     "sensor_rank": rank_idx,
                     "sensor_peak_score": sensor_score,
                     "sensor_mean_score": sensor_score,
+                    "sensor_contribution_pct": round(pct, 1),
+                    "sensor_trust": sensor_trust_map.get(sensor_id, "Unknown"),
+                    "sensor_normal_minutes": 1 if sensor_trust_map.get(sensor_id) == "Reliable" else 0,
+                    "sensor_anomalous_minutes": 1 if sensor_trust_map.get(sensor_id) == "Degraded" else 0,
+                    "sensor_sqs": sensor_sqs_map.get(sensor_id),
                     "alert_max_score": score_val,
                     "alert_mean_score": score_val,
+                    "risk_score": risk_score_val,
+                    "peak_risk_score": risk_score_val,
+                    "mean_risk_score": risk_score_val,
+                    "adaptive_threshold": adaptive_threshold_val,
                     "threshold": "ADAPTIVE",
                 })
 
@@ -1122,6 +1219,22 @@ def _beta_build_span_alert_tables():
                     sensor_low_count = int((sensor_group["severity"] == "LOW").sum())
                     sensor_scores = pd.to_numeric(sensor_group["sensor_peak_score"], errors="coerce")
                     active_scores = sensor_scores.dropna()
+                    # Get trust from the most recent minute in the span for this sensor
+                    sensor_trust_val = "Unknown"
+                    sensor_normal_minutes = 0
+                    sensor_anomalous_minutes = 0
+                    if "sensor_trust" in sensor_group.columns:
+                        trust_vals = sensor_group["sensor_trust"].dropna()
+                        if not trust_vals.empty:
+                            sensor_trust_val = trust_vals.iloc[-1]
+                            sensor_normal_minutes = int((trust_vals == "Reliable").sum())
+                            sensor_anomalous_minutes = int((trust_vals == "Degraded").sum())
+                    # Get SQS from the most recent minute in the span
+                    sensor_sqs_val = None
+                    if "sensor_sqs" in sensor_group.columns:
+                        sqs_vals = pd.to_numeric(sensor_group["sensor_sqs"], errors="coerce").dropna()
+                        if not sqs_vals.empty:
+                            sensor_sqs_val = float(sqs_vals.iloc[-1])
                     sensor_agg_rows.append({
                         "sensor": sensor_id,
                         "minute_count": int(len(sensor_group)),
@@ -1132,6 +1245,10 @@ def _beta_build_span_alert_tables():
                         "low_count": sensor_low_count,
                         "sensor_peak_score": float(active_scores.max()) if not active_scores.empty else None,
                         "sensor_mean_score": float(active_scores.mean()) if not active_scores.empty else 0.0,
+                        "sensor_trust": sensor_trust_val,
+                        "sensor_normal_minutes": sensor_normal_minutes,
+                        "sensor_anomalous_minutes": sensor_anomalous_minutes,
+                        "sensor_sqs": sensor_sqs_val,
                     })
 
             sensor_agg_rows.sort(
@@ -1142,7 +1259,11 @@ def _beta_build_span_alert_tables():
                 )
             )
 
+            # Compute contribution pct for span sensors
+            span_total_contribution = sum(r["sensor_peak_score"] or 0 for r in sensor_agg_rows)
+
             for rank_idx, row in enumerate(sensor_agg_rows, start=1):
+                pct = ((row["sensor_peak_score"] or 0) / span_total_contribution * 100) if span_total_contribution > 0 else 0
                 span_sensor_rows.append({
                     "view_type": "span",
                     "start_ts": str(start_dt),
@@ -1159,10 +1280,22 @@ def _beta_build_span_alert_tables():
                     "sensor_rank": rank_idx,
                     "sensor_peak_score": row["sensor_peak_score"],
                     "sensor_mean_score": row["sensor_mean_score"],
+                    "sensor_contribution_pct": round(pct, 1),
+                    "sensor_trust": row.get("sensor_trust", "Unknown"),
+                    "sensor_normal_minutes": row.get("sensor_normal_minutes", 0),
+                    "sensor_anomalous_minutes": row.get("sensor_anomalous_minutes", 0),
+                    "sensor_sqs": row.get("sensor_sqs"),
                     "alert_max_score": float(pd.to_numeric(span_df["max_score"], errors="coerce").max())
                     if not span_df["max_score"].empty else None,
                     "alert_mean_score": float(pd.to_numeric(span_df["mean_score"], errors="coerce").mean())
                     if not span_df["mean_score"].empty else None,
+                    "risk_score": None,
+                    "peak_risk_score": float(pd.to_numeric(span_df["risk_score"], errors="coerce").max())
+                    if "risk_score" in span_df.columns else None,
+                    "mean_risk_score": float(pd.to_numeric(span_df["risk_score"], errors="coerce").mean())
+                    if "risk_score" in span_df.columns else None,
+                    "adaptive_threshold": float(pd.to_numeric(span_df["adaptive_threshold"], errors="coerce").mean())
+                    if "adaptive_threshold" in span_df.columns else None,
                     "threshold": "ADAPTIVE",
                 })
 
@@ -1170,6 +1303,10 @@ def _beta_build_span_alert_tables():
             primary_sensor_peak = sensor_agg_rows[0]["sensor_peak_score"] if sensor_agg_rows else None
             primary_sensor_mean = sensor_agg_rows[0]["sensor_mean_score"] if sensor_agg_rows else None
             affected_sensors = "|".join(row["sensor"] for row in sensor_agg_rows) if sensor_agg_rows else "UNKNOWN"
+
+            # Aggregate risk scores across the span
+            span_risk_scores = pd.to_numeric(span_df["risk_score"], errors="coerce") if "risk_score" in span_df.columns else pd.Series(dtype=float)
+            span_thresholds = pd.to_numeric(span_df["adaptive_threshold"], errors="coerce") if "adaptive_threshold" in span_df.columns else pd.Series(dtype=float)
 
             span_alert_rows.append({
                 "view_type": "span",
@@ -1192,7 +1329,23 @@ def _beta_build_span_alert_tables():
                 if not span_df["max_score"].empty else None,
                 "mean_score": float(pd.to_numeric(span_df["mean_score"], errors="coerce").mean())
                 if not span_df["mean_score"].empty else None,
+                "risk_score": None,
+                "peak_risk_score": float(span_risk_scores.max()) if not span_risk_scores.empty and span_risk_scores.notna().any() else None,
+                "mean_risk_score": float(span_risk_scores.mean()) if not span_risk_scores.empty and span_risk_scores.notna().any() else None,
+                "adaptive_threshold": float(span_thresholds.mean()) if not span_thresholds.empty and span_thresholds.notna().any() else None,
                 "threshold": "ADAPTIVE",
+                "system_confidence": float(pd.to_numeric(span_df["system_confidence"], errors="coerce").mean())
+                if "system_confidence" in span_df.columns and not pd.to_numeric(span_df["system_confidence"], errors="coerce").isna().all() else None,
+                "reliable_count": int(pd.to_numeric(span_df["reliable_count"], errors="coerce").max())
+                if "reliable_count" in span_df.columns else 0,
+                "degraded_count": int(pd.to_numeric(span_df["degraded_count"], errors="coerce").max())
+                if "degraded_count" in span_df.columns else 0,
+                "avg_sqs": float(pd.to_numeric(span_df["avg_sqs"], errors="coerce").mean())
+                if "avg_sqs" in span_df.columns and not pd.to_numeric(span_df["avg_sqs"], errors="coerce").isna().all() else None,
+                "sqs_good_count": int(pd.to_numeric(span_df["sqs_good_count"], errors="coerce").max())
+                if "sqs_good_count" in span_df.columns else 0,
+                "sqs_poor_count": int(pd.to_numeric(span_df["sqs_poor_count"], errors="coerce").max())
+                if "sqs_poor_count" in span_df.columns else 0,
             })
 
         for idx in range(1, len(sys_alerts)):

@@ -49,7 +49,10 @@
       "Bash(ls -lh c:/Users/AkashPatil/Anamoly/backend/data_beta/*.csv)",
       "Bash(grep -n \"subsystem_timeseries\\\\|sensor_timeseries\" /c/Users/AkashPatil/Anamoly/frontend/src/components/*.js)",
       "Bash(git prune:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(grep -n \"GaugeWidget\" c:/Users/AkashPatil/Anamoly/frontend/src/components/*.js)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''backend/app.py'', doraise=True\\)\")",
+      "Bash(sort -t',' -k2 -u)"
     ]
   }
 }

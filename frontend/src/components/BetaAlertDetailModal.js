@@ -112,6 +112,7 @@ const styles = {
     letterSpacing: '0.04em',
     display: 'flex',
     alignItems: 'center',
+    justifyContent: 'center',
   },
   metaValue: {
     fontSize: '16px',
@@ -284,87 +285,191 @@ function BetaAlertDetailModal({ alert, onClose }) {
             <span style={styles.badge('#E6F4EA', '#1B5E20')}>{alert.threshold || 'ADAPTIVE'} THRESHOLD</span>
           </div>
 
-          <div style={styles.gaugeRow}>
+          {/* Centered gauge + stats grid */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '24px' }}>
             <GaugeWidget
-              value={alert.max_score}
-              max={Math.max(alert.max_score || 1, alert.sensor_max_score || 1)}
-              label={isSpanView ? 'Peak Contribution Sum' : 'Contribution Sum'}
+              value={isSpanView ? alert.peak_risk_score : alert.risk_score}
+              max={Math.max((isSpanView ? alert.peak_risk_score : alert.risk_score) || 0.01, alert.adaptive_threshold || 0.01) * 1.2}
+              label={isSpanView ? 'Peak Risk Score' : 'Risk Score'}
               color={alert.severity === 'HIGH' ? '#EF5350' : alert.severity === 'MEDIUM' ? '#FFA726' : '#4CAF50'}
-              size={120}
-              tooltip={isSpanView
-                ? 'Highest raw sum of all sensor contributions reached anywhere in the alarm span.'
-                : 'Raw sum of all sensor contributions at the selected alarm minute.'}
+              size={130}
+              sublabel={alert.adaptive_threshold != null ? `Threshold: ${Number(alert.adaptive_threshold).toFixed(3)}` : undefined}
+              tooltip="Normalized risk score (0-1) used by the alarm system. The alarm fires when this exceeds the adaptive threshold."
             />
-            {isSpanView && (
-              <GaugeWidget
-                value={alert.mean_score}
-                max={Math.max(alert.max_score || 1, alert.sensor_max_score || 1)}
-                label="Mean Contribution Sum"
-                color={alert.severity === 'HIGH' ? '#EF5350' : alert.severity === 'MEDIUM' ? '#FFA726' : '#4CAF50'}
-                size={120}
-                tooltip="Mean raw sum of all sensor contributions across the alarm span."
-              />
-            )}
-            <GaugeWidget
-              value={alert.sensor_max_score}
-              max={Math.max(alert.max_score || 1, alert.sensor_max_score || 1)}
-              label="Top Sensor Contribution"
-              color="#388E3C"
-              size={120}
-              tooltip={currentView === 'span'
-                ? 'Peak individual sensor contribution across the span (sigma-scaled residual).'
-                : 'Top individual sensor contribution at the selected alarm minute (sigma-scaled residual).'}
-            />
-          </div>
 
-          <div style={styles.metaGrid}>
-            <div style={styles.metaItem}>
-              <div style={styles.metaLabel}>
-                {currentView === 'span' ? 'Span' : 'Window'}
-                <InfoTooltip text={currentView === 'span'
-                  ? 'Dynamic alarm spans run from the first contiguous alarm minute to the last contiguous alarm minute in the cluster.'
-                  : 'Timestamp-level alarm rows are shown with a one-minute window.'} />
+            {/* Stats grid below gauge */}
+            {/* Row 1: Quality Metrics */}
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '16px', width: '100%' }}>
+              {alert.system_confidence != null && (
+                <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
+                  <div style={styles.metaLabel}>
+                    Confidence <InfoTooltip text="System confidence in the anomaly detection model at the time of this alarm." />
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}>
+                    <div style={{ flex: 1, height: '6px', background: '#E8ECE8', borderRadius: '3px', overflow: 'hidden', maxWidth: '60px' }}>
+                      <div style={{
+                        width: `${(alert.system_confidence || 0) * 100}%`,
+                        height: '100%',
+                        background: alert.system_confidence >= 0.8 ? '#4CAF50' : alert.system_confidence >= 0.5 ? '#FFA726' : '#EF5350',
+                        borderRadius: '3px',
+                      }} />
+                    </div>
+                    <span style={styles.metaValue}>{((alert.system_confidence || 0) * 100).toFixed(0)}%</span>
+                  </div>
+                </div>
+              )}
+              {alert.avg_sqs != null && (
+                <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
+                  <div style={styles.metaLabel}>
+                    Signal Quality <InfoTooltip text="Sensor Quality Score (SQS) measures raw signal data validity. A score of 100% means all sensor readings passed quality checks. This is independent of anomaly detection." />
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}>
+                    <div style={{ flex: 1, height: '6px', background: '#E8ECE8', borderRadius: '3px', overflow: 'hidden', maxWidth: '60px' }}>
+                      <div style={{
+                        width: `${(alert.avg_sqs || 0) * 100}%`,
+                        height: '100%',
+                        background: alert.avg_sqs >= 0.8 ? '#2196F3' : alert.avg_sqs >= 0.5 ? '#FFA726' : '#EF5350',
+                        borderRadius: '3px',
+                      }} />
+                    </div>
+                    <span style={styles.metaValue}>{((alert.avg_sqs || 0) * 100).toFixed(0)}%</span>
+                  </div>
+                </div>
+              )}
+              {(alert.reliable_count > 0 || alert.degraded_count > 0) && (
+                <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
+                  <div style={styles.metaLabel}>
+                    Behavior <InfoTooltip text="Derived from autoencoder reconstruction error. 'Degraded' means the sensor's behavior pattern deviates from learned normal -- even if the raw signal quality (SQS) is perfect." />
+                  </div>
+                  <div style={{ display: 'flex', gap: '4px', justifyContent: 'center', marginTop: '2px', flexWrap: 'wrap' }}>
+                    {alert.reliable_count > 0 && (
+                      <span style={{ fontSize: '11px', fontWeight: 600, padding: '2px 6px', borderRadius: '10px', background: '#E8F5E9', color: '#2E7D32', whiteSpace: 'nowrap' }}>
+                        {alert.reliable_count} Reliable
+                      </span>
+                    )}
+                    {alert.degraded_count > 0 && (
+                      <span style={{ fontSize: '11px', fontWeight: 600, padding: '2px 6px', borderRadius: '10px', background: '#FFF3E0', color: '#E65100', whiteSpace: 'nowrap' }}>
+                        {alert.degraded_count} Degraded
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* Row 2: Alarm Metadata */}
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '8px', width: '100%' }}>
+              <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
+                <div style={styles.metaLabel}>{currentView === 'span' ? 'Span' : 'Window'}</div>
+                <div style={styles.metaValue}>{formatDuration(alert.duration_minutes)}</div>
               </div>
-              <div style={styles.metaValue}>{formatDuration(alert.duration_minutes)}</div>
-            </div>
-            <div style={styles.metaItem}>
-              <div style={styles.metaLabel}>
-                Primary Sensor
-                <InfoTooltip text="Top-ranked sensor at this alarm timestamp, based on the source contribution data." />
-              </div>
-              <div style={{ ...styles.metaValue, fontSize: '13px' }}>{formatSensorName(alert.sensor_id)}</div>
-            </div>
-            <div style={styles.metaItem}>
-              <div style={styles.metaLabel}>{currentView === 'span' ? 'Alerts In Span' : 'Affected Sensors'}</div>
-              <div style={styles.metaValue}>{currentView === 'span' ? (alert.minute_count || 1) : alert.affected_sensor_count}</div>
-            </div>
-            <div style={styles.metaItem}>
-              <div style={styles.metaLabel}>{isSpanView ? 'Peak Contribution Sum' : 'Contribution Sum'}</div>
-              <div style={styles.metaValue}>{formatScore(alert.max_score)}</div>
-            </div>
-            {isSpanView && (
-              <div style={styles.metaItem}>
-                <div style={styles.metaLabel}>Mean Contribution Sum</div>
-                <div style={styles.metaValue}>{formatScore(alert.mean_score)}</div>
-              </div>
-            )}
-            <div style={styles.metaItem}>
-              <div style={styles.metaLabel}>{currentView === 'span' ? 'Severity Mix' : 'Top Sensor Contribution'}</div>
-              <div style={styles.metaValue}>{currentView === 'span' ? (severityMixLabel || '--') : formatScore(alert.sensor_max_score)}</div>
-            </div>
-            {currentView === 'span' && (
-              <div style={styles.metaItem}>
-                <div style={styles.metaLabel}>Affected Sensors</div>
+              {currentView === 'span' && (
+                <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
+                  <div style={styles.metaLabel}>Alerts</div>
+                  <div style={styles.metaValue}>{alert.minute_count || 1}</div>
+                </div>
+              )}
+              <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
+                <div style={styles.metaLabel}>Sensors</div>
                 <div style={styles.metaValue}>{alert.affected_sensor_count}</div>
               </div>
-            )}
-            {currentView === 'span' && (
-              <div style={styles.metaItem}>
-                <div style={styles.metaLabel}>Top Sensor Contribution</div>
-                <div style={styles.metaValue}>{formatScore(alert.sensor_max_score)}</div>
-              </div>
-            )}
+              {currentView === 'span' && severityMixLabel && (
+                <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
+                  <div style={styles.metaLabel}>Severity Mix</div>
+                  <div style={{ ...styles.metaValue, fontSize: '13px' }}>{severityMixLabel}</div>
+                </div>
+              )}
+            </div>
           </div>
+
+          {/* Primary Sensor Callout */}
+          {!loading && sensorAlerts.length > 0 && (() => {
+            const topSensor = sensorAlerts.slice().sort((a, b) => (a.sensor_rank || 99) - (b.sensor_rank || 99))[0];
+            if (!topSensor) return null;
+            const pct = topSensor.sensor_contribution_pct;
+            const totalMin = (topSensor.sensor_normal_minutes || 0) + (topSensor.sensor_anomalous_minutes || 0);
+            return (
+              <div style={{
+                background: 'linear-gradient(135deg, rgba(27,94,32,0.06) 0%, rgba(76,175,80,0.04) 100%)',
+                border: '1px solid rgba(27,94,32,0.15)',
+                borderRadius: '14px',
+                padding: '16px 20px',
+                marginBottom: '20px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '16px',
+              }}>
+                <div style={{
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: '12px',
+                  background: alert.severity === 'HIGH' ? '#FFCDD2' : alert.severity === 'MEDIUM' ? '#FFE0B2' : '#E8F5E9',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '18px',
+                  flexShrink: 0,
+                }}>
+                  {'\u26A0'}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: '14px', fontWeight: 600, color: '#1A1F1A', marginBottom: '4px' }}>
+                    {formatSensorName(topSensor.sensor)}
+                    <span style={{ fontSize: '11px', fontWeight: 400, color: '#6B736B', marginLeft: '8px' }}>Primary Driver</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    {pct != null && (
+                      <span style={{ fontSize: '12px', color: '#4A524A' }}>
+                        <strong>{pct}%</strong> contribution{topSensor.sensor_peak_score != null ? ` (${formatScore(topSensor.sensor_peak_score)})` : ''}
+                      </span>
+                    )}
+                    <span style={{ color: '#D0D4D0' }}>|</span>
+                    {topSensor.sensor_sqs != null && (
+                      <span style={{ fontSize: '11px', color: topSensor.sensor_sqs >= 0.8 ? '#1565C0' : topSensor.sensor_sqs >= 0.5 ? '#E65100' : '#C62828', fontWeight: 600 }}>
+                        SQS {(topSensor.sensor_sqs * 100).toFixed(0)}%
+                      </span>
+                    )}
+                    <span style={{ color: '#D0D4D0' }}>|</span>
+                    {isSpanView && totalMin > 0 ? (
+                      <span style={{ fontSize: '11px', fontWeight: 600, color: topSensor.sensor_anomalous_minutes > 0 ? '#E65100' : '#2E7D32' }}>
+                        {topSensor.sensor_anomalous_minutes > 0
+                          ? `Degraded ${topSensor.sensor_anomalous_minutes}/${totalMin} min`
+                          : `Reliable ${totalMin}/${totalMin} min`}
+                      </span>
+                    ) : topSensor.sensor_trust ? (
+                      <span style={{ fontSize: '11px', fontWeight: 600, color: topSensor.sensor_trust === 'Reliable' ? '#2E7D32' : topSensor.sensor_trust === 'Degraded' ? '#E65100' : '#757575' }}>
+                        {topSensor.sensor_trust === 'Reliable' ? 'Reliable' : topSensor.sensor_trust === 'Degraded' ? 'Degraded' : topSensor.sensor_trust}
+                      </span>
+                    ) : null}
+                    <span style={{ color: '#D0D4D0' }}>|</span>
+                    <span style={{
+                      padding: '1px 6px',
+                      borderRadius: '8px',
+                      fontSize: '10px',
+                      fontWeight: 600,
+                      background: topSensor.severity === 'HIGH' ? '#FFCDD2' : topSensor.severity === 'MEDIUM' ? '#FFE0B2' : '#FFF8E1',
+                      color: topSensor.severity === 'HIGH' ? '#C62828' : topSensor.severity === 'MEDIUM' ? '#E65100' : '#9A6A00',
+                    }}>
+                      {topSensor.severity}
+                    </span>
+                  </div>
+                </div>
+                {pct != null && (
+                  <div style={{
+                    textAlign: 'center',
+                    flexShrink: 0,
+                    background: 'rgba(27,94,32,0.08)',
+                    border: '1px solid rgba(27,94,32,0.15)',
+                    borderRadius: '12px',
+                    padding: '8px 16px',
+                    minWidth: '80px',
+                  }}>
+                    <div style={{ fontSize: '22px', fontWeight: 700, color: '#1B5E20', lineHeight: 1.1 }}>{pct}%</div>
+                    <div style={{ fontSize: '9px', color: '#4A6A4A', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: '2px', fontWeight: 600 }}>contribution</div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {loading ? (
             <div style={styles.loading}>Loading system alarm details...</div>
@@ -394,10 +499,11 @@ function BetaAlertDetailModal({ alert, onClose }) {
                       <tr>
                         <th style={styles.th}>Rank</th>
                         <th style={styles.th}>Sensor</th>
-                        <th style={styles.th}>{isSpanView ? 'Peak Contribution' : 'Contribution'}</th>
-                        {isSpanView && <th style={styles.th}>Mean Contribution</th>}
+                        <th style={styles.th}>Contribution</th>
+                        {isSpanView && <th style={styles.th}>Mean</th>}
+                        <th style={styles.th}>SQS</th>
+                        <th style={styles.th}>Behavior</th>
                         <th style={styles.th}>Severity</th>
-                        <th style={styles.th}>Class</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -412,8 +518,68 @@ function BetaAlertDetailModal({ alert, onClose }) {
                           >
                             <td style={styles.td}>#{sensorAlert.sensor_rank}</td>
                             <td style={{ ...styles.td, fontWeight: 500 }}>{formatSensorName(sensorAlert.sensor)}</td>
-                            <td style={styles.td}>{formatScore(sensorAlert.sensor_peak_score)}</td>
+                            <td style={styles.td}>
+                              <span style={{ fontWeight: 600 }}>{sensorAlert.sensor_contribution_pct != null ? `${sensorAlert.sensor_contribution_pct}%` : formatScore(sensorAlert.sensor_peak_score)}</span>
+                              {sensorAlert.sensor_contribution_pct != null && sensorAlert.sensor_peak_score != null && (
+                                <span style={{ fontSize: '11px', color: '#6B736B', marginLeft: '4px' }}>({formatScore(sensorAlert.sensor_peak_score)})</span>
+                              )}
+                            </td>
                             {isSpanView && <td style={styles.td}>{formatScore(sensorAlert.sensor_mean_score)}</td>}
+                            <td style={styles.td}>
+                              {sensorAlert.sensor_sqs != null ? (
+                                <span style={{
+                                  fontWeight: 600,
+                                  color: sensorAlert.sensor_sqs >= 0.8 ? '#1565C0' : sensorAlert.sensor_sqs >= 0.5 ? '#E65100' : '#C62828',
+                                }}>
+                                  {(sensorAlert.sensor_sqs * 100).toFixed(0)}%
+                                </span>
+                              ) : (
+                                <span style={{ color: '#B0B8B0' }}>--</span>
+                              )}
+                            </td>
+                            <td style={styles.td}>
+                              {isSpanView && (sensorAlert.sensor_normal_minutes > 0 || sensorAlert.sensor_anomalous_minutes > 0) ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'flex-start' }}>
+                                  {sensorAlert.sensor_anomalous_minutes > 0 && (
+                                    <span style={{
+                                      padding: '2px 8px', borderRadius: '10px', fontSize: '10px', fontWeight: 600,
+                                      background: '#FFF3E0', color: '#E65100',
+                                    }}>
+                                      Degraded {sensorAlert.sensor_anomalous_minutes}/{sensorAlert.sensor_normal_minutes + sensorAlert.sensor_anomalous_minutes} min
+                                    </span>
+                                  )}
+                                  {sensorAlert.sensor_normal_minutes > 0 && sensorAlert.sensor_anomalous_minutes === 0 && (
+                                    <span style={{
+                                      padding: '2px 8px', borderRadius: '10px', fontSize: '10px', fontWeight: 600,
+                                      background: '#E8F5E9', color: '#2E7D32',
+                                    }}>
+                                      Reliable {sensorAlert.sensor_normal_minutes}/{sensorAlert.sensor_normal_minutes} min
+                                    </span>
+                                  )}
+                                  {sensorAlert.sensor_normal_minutes > 0 && sensorAlert.sensor_anomalous_minutes > 0 && (
+                                    <span style={{
+                                      padding: '2px 8px', borderRadius: '10px', fontSize: '10px', fontWeight: 600,
+                                      background: '#E8F5E9', color: '#2E7D32',
+                                    }}>
+                                      Reliable {sensorAlert.sensor_normal_minutes}/{sensorAlert.sensor_normal_minutes + sensorAlert.sensor_anomalous_minutes} min
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span style={{
+                                  padding: '2px 8px',
+                                  borderRadius: '10px',
+                                  fontSize: '10px',
+                                  fontWeight: 600,
+                                  background: sensorAlert.sensor_trust === 'Reliable' ? '#E8F5E9'
+                                    : sensorAlert.sensor_trust === 'Degraded' ? '#FFF3E0' : '#F5F5F5',
+                                  color: sensorAlert.sensor_trust === 'Reliable' ? '#2E7D32'
+                                    : sensorAlert.sensor_trust === 'Degraded' ? '#E65100' : '#757575',
+                                }}>
+                                  {sensorAlert.sensor_trust === 'Reliable' ? 'Reliable' : sensorAlert.sensor_trust === 'Degraded' ? 'Degraded' : 'Unknown'}
+                                </span>
+                              )}
+                            </td>
                             <td style={styles.td}>
                               <span style={{
                                 padding: '2px 8px',
@@ -438,7 +604,6 @@ function BetaAlertDetailModal({ alert, onClose }) {
                                 {sensorAlert.severity}
                               </span>
                             </td>
-                            <td style={styles.td}>{sensorAlert.class}</td>
                           </motion.tr>
                         ))}
                     </tbody>
