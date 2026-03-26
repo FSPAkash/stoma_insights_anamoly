@@ -127,12 +127,12 @@ export default function useTimeFilter(timeseries, timestampCol) {
     const d = new Date(selectedDay + 'T00:00:00');
     const dayStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     if (isLatestMode) {
-      return lastNHours >= 24 ? `${dayStr} -- Full Day (UTC)` : `${dayStr} -- Last ${lastNHours}h (UTC)`;
+      return lastNHours >= 24 ? `Now showing ${dayStr} -- Full Day (UTC)` : `Now showing ${dayStr} -- Last ${lastNHours}h (UTC)`;
     }
     const timeRange = (startTime === '00:00' && endTime === '23:59')
       ? 'Full Day'
       : `${startTime} to ${endTime}`;
-    return `${dayStr} -- ${timeRange} (UTC)`;
+    return `Now showing ${dayStr} -- ${timeRange} (UTC)`;
   }, [selectedDay, isLatestMode, lastNHours, startTime, endTime]);
 
   return {

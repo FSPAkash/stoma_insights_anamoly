@@ -77,11 +77,17 @@ export const getBetaOverview = () =>
 export const getBetaInvalidSensors = (threshold = 0.10) =>
   api.get('/beta/invalid_sensors', { params: { threshold } });
 
+export const getBetaSensorValidationReport = () =>
+  api.get('/beta/sensor_validation_report');
+
 export const getBetaSubsystems = () =>
   api.get('/beta/subsystems');
 
 export const getBetaSensorQuality = (systemId, downsample = 1, params = {}) =>
   api.get(`/beta/sensor_quality/${encodeURIComponent(systemId)}`, { params: { downsample, ...params } });
+
+export const getBetaSensorQualityWindow = (systemId, startTs, endTs, downsample = 1) =>
+  api.get(`/beta/sensor_quality/${encodeURIComponent(systemId)}`, { params: { downsample, start_ts: startTs, end_ts: endTs } });
 
 export const getBetaSubsystemScores = (downsample = 1) =>
   api.get('/beta/subsystem_scores', { params: { downsample } });
@@ -112,6 +118,12 @@ export const getBetaSubsystemBehavior = (systemId, downsample = 1, params = {}) 
 
 export const getBetaAlertsSensorLevel = (params = {}) =>
   api.get('/beta/alerts_sensor_level', { params });
+
+export const getBetaRadarFingerprints = () =>
+  api.get('/beta/radar_fingerprints');
+
+export const getBetaSensorContributions = (systemId, downsample = 1) =>
+  api.get(`/beta/sensor_contributions/${encodeURIComponent(systemId)}`, { params: { downsample } });
 
 export const getBetaRiskDecompositionForEpisode = (startTs, endTs) =>
   api.get('/beta/risk_decomposition/episode', { params: { start_ts: startTs, end_ts: endTs } });

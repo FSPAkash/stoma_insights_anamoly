@@ -1,17 +1,18 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   ResponsiveContainer,
-  LineChart,
   Line,
+  Area,
   XAxis,
   YAxis,
   Tooltip,
   CartesianGrid,
   ReferenceArea,
+  ComposedChart,
 } from 'recharts';
 import GlassCard from './GlassCard';
 import InfoTooltip from './InfoTooltip';
-import { getBetaSubsystemBehavior, getBetaAlerts } from '../utils/api';
+import { getBetaSubsystemBehavior, getBetaAlerts, getBetaSensorContributions } from '../utils/api';
 import { formatSensorName, systemColor } from '../utils/formatters';
 
 const SENSOR_PALETTE = [
@@ -47,12 +48,16 @@ const styles = {
   },
   legendDot: (color) => ({ width: '8px', height: '8px', borderRadius: '50%', background: color }),
   emptyState: { textAlign: 'center', padding: '48px 20px', color: '#8A928A', fontSize: '14px' },
+  controlContainer: {
+    background: 'rgba(245,248,245,0.6)', border: '1px solid rgba(203,230,200,0.3)',
+    borderRadius: '10px', padding: '10px 14px', marginBottom: '12px',
+  },
 };
 
 const filterBadgeStyle = {
-  fontSize: '10px', fontWeight: 500, color: '#1B5E20',
+  fontSize: '12px', fontWeight: 600, color: '#1B5E20',
   background: 'rgba(129,199,132,0.15)', border: '1px solid rgba(129,199,132,0.3)',
-  borderRadius: '6px', padding: '3px 10px', marginLeft: 'auto',
+  borderRadius: '8px', padding: '5px 14px', marginLeft: 'auto',
   whiteSpace: 'nowrap', letterSpacing: '0.02em', textTransform: 'none',
 };
 
@@ -190,9 +195,13 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
   const [alertsLoading, setAlertsLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [visibleSensors, setVisibleSensors] = useState({});
+  const [showContributions, setShowContributions] = useState(false);
+  const [contribData, setContribData] = useState(null);
+  const [contribLoading, setContribLoading] = useState(false);
   const [refAreaLeft, setRefAreaLeft] = useState(null);
   const [refAreaRight, setRefAreaRight] = useState(null);
   const behaviorCacheRef = useRef({});
+  const contribCacheRef = useRef({});
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef(null);
 
@@ -229,6 +238,23 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
   useEffect(() => {
     if (selectedSystem) loadData(selectedSystem);
   }, [selectedSystem, loadData]);
+
+  // Fetch sensor contributions when toggle is on
+  useEffect(() => {
+    if (!showContributions || !selectedSystem) return;
+    if (contribCacheRef.current[selectedSystem]) {
+      setContribData(contribCacheRef.current[selectedSystem]);
+      return;
+    }
+    setContribLoading(true);
+    getBetaSensorContributions(selectedSystem, 1)
+      .then((res) => {
+        contribCacheRef.current[selectedSystem] = res.data;
+        setContribData(res.data);
+      })
+      .catch(() => setContribData(null))
+      .finally(() => setContribLoading(false));
+  }, [showContributions, selectedSystem]);
 
   useEffect(() => {
     let cancelled = false;
@@ -285,6 +311,29 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
       fullTs: row[tsCol] || '',
     }));
   }, [sensorData, selectedDay, isLatestMode, lastNHours, startTime, endTime]);
+
+  const contribSensors = useMemo(() => contribData?.sensors || [], [contribData]);
+
+  // Merge contribution data into chartData by timestamp
+  const mergedChartData = useMemo(() => {
+    if (!showContributions || !contribData?.timeseries?.length || !chartData.length) return chartData;
+    const contribByTs = {};
+    for (const row of contribData.timeseries) {
+      const key = String(row.ts || '').substring(0, 16);
+      contribByTs[key] = row;
+    }
+    return chartData.map((row) => {
+      const key = String(row.fullTs || '').substring(0, 16);
+      const cr = contribByTs[key];
+      if (!cr) return row;
+      const merged = { ...row };
+      for (const s of contribSensors) {
+        merged[`_contrib_${s}`] = cr[s] ?? null;
+      }
+      if (cr.system_score != null) merged._contribScore = cr.system_score;
+      return merged;
+    });
+  }, [chartData, contribData, contribSensors, showContributions]);
 
   const findClosestIdx = useCallback((targetTs, data) => {
     if (!data.length) return null;
@@ -473,12 +522,17 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
         })}
       </div>
 
-      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
+      <div style={{ ...styles.controlContainer, display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
         <div style={controlPillStyle(alarmView === 'minute')} onClick={() => setAlarmView('minute')}>
           Minute Windows
         </div>
         <div style={controlPillStyle(alarmView === 'span')} onClick={() => setAlarmView('span')}>
           Alarm Spans
+        </div>
+        <div style={{ marginLeft: 'auto' }}>
+          <div style={controlPillStyle(showContributions, '#7B1FA2')} onClick={() => setShowContributions((v) => !v)}>
+            {contribLoading ? 'Loading...' : 'Sensor Contributions'}
+          </div>
         </div>
       </div>
 
@@ -503,7 +557,8 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
         ) : (
           <>
             {/* Sensor toggle legend */}
-            <div style={styles.legendRow}>
+            <div style={{ ...styles.controlContainer, marginBottom: '12px' }}>
+            <div style={{ ...styles.legendRow, marginTop: 0 }}>
               {sensors.map((s, i) => {
                 const color = SENSOR_PALETTE[i % SENSOR_PALETTE.length];
                 const active = visibleSensors[s];
@@ -549,8 +604,9 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
                 </div>
               )}
             </div>
+            </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+            <div style={{ ...styles.controlContainer, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <div style={{
                 display: 'inline-flex', alignItems: 'center', gap: '4px',
                 fontSize: '10px', padding: '4px 12px', borderRadius: '20px',
@@ -571,9 +627,9 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
                 </div>
               )}
             </div>
-            <ResponsiveContainer width="100%" height={340}>
-              <LineChart
-                data={chartData}
+            <ResponsiveContainer width="100%" height={showContributions ? 400 : 340}>
+              <ComposedChart
+                data={mergedChartData}
                 margin={{ top: 10, right: 20, bottom: 5, left: 0 }}
                 style={{ cursor: 'crosshair' }}
                 onMouseDown={handleZoomMouseDown}
@@ -587,13 +643,30 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
                   ticks={xTicks} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false}
                   label={{ value: 'UTC', position: 'insideBottomRight', offset: -2, style: { fontSize: 9, fill: '#8A928A' } }}
                   tickFormatter={(idx) => {
-                    const row = chartData.find((r) => r._idx === idx) || chartData[idx];
+                    const row = mergedChartData.find((r) => r._idx === idx) || mergedChartData[idx];
                     if (!row) return '';
                     return row.ts;
                   }}
                 />
                 <YAxis domain={yDomain} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false} />
                 <Tooltip content={<CustomTooltip downtimeBands={downtimeBands} alarmBands={alarmBands} alarmView={alarmView} />} />
+
+                {/* Stacked sensor contribution areas */}
+                {showContributions && contribSensors.map((s, i) => (
+                  <Area
+                    key={`contrib-${s}`}
+                    type="monotone"
+                    dataKey={`_contrib_${s}`}
+                    stackId="contrib"
+                    fill={SENSOR_PALETTE[i % SENSOR_PALETTE.length]}
+                    stroke="none"
+                    fillOpacity={0.45}
+                    name={`${formatSensorName(s)} contrib`}
+                    animationDuration={400}
+                    connectNulls={false}
+                    isAnimationActive={false}
+                  />
+                ))}
 
                 {/* Downtime bands - prominent solid gray */}
                 {downtimeBands.map((band, i) => (
@@ -650,7 +723,7 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
                     fill="rgba(27,94,32,0.15)"
                   />
                 )}
-              </LineChart>
+              </ComposedChart>
             </ResponsiveContainer>
 
 

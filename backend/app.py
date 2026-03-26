@@ -1442,6 +1442,30 @@ def beta_overview():
     return jsonify(result)
 
 
+@app.route("/api/beta/sensor_validation_report", methods=["GET"])
+def beta_sensor_validation_report():
+    """Return the initial sensor validation report (pre-clustering)."""
+    df = beta_load_csv("initial_sensor_validation_report.csv")
+    if df.empty:
+        return jsonify({"sensors": [], "total": 0, "passed": 0, "failed": 0})
+    records = []
+    for _, row in df.iterrows():
+        records.append({
+            "sensor": row.get("sensor", ""),
+            "n_total": int(row.get("n_total", 0)),
+            "n_missing": int(row.get("n_missing", 0)),
+            "missing_ratio": round(float(row.get("missing_ratio", 0)), 4),
+            "std": float(row.get("std", 0)),
+            "n_unique": int(row.get("n_unique", 0)),
+            "unique_ratio": round(float(row.get("unique_ratio", 0)), 4),
+            "passed": bool(row.get("passed", True)),
+            "removal_reasons": str(row.get("removal_reasons", "")) if pd.notna(row.get("removal_reasons")) else "",
+        })
+    passed = sum(1 for r in records if r["passed"])
+    failed = len(records) - passed
+    return jsonify({"sensors": records, "total": len(records), "passed": passed, "failed": failed})
+
+
 @app.route("/api/beta/invalid_sensors", methods=["GET"])
 def beta_invalid_sensors():
     """Return sensors with high invalid/NaN rates."""
@@ -1526,6 +1550,8 @@ def beta_subsystems():
 def beta_sensor_quality(system_id):
     """Return per-sensor SQS, Engine A, Engine B time series for a given subsystem."""
     downsample = request.args.get("downsample", default=1, type=int)
+    start_ts = request.args.get("start_ts", default=None, type=str)
+    end_ts = request.args.get("end_ts", default=None, type=str)
 
     catalog_df = beta_load_csv("dynamic_catalog.csv")
     empty_response = {
@@ -1596,6 +1622,16 @@ def beta_sensor_quality(system_id):
                     combined[f"{sensor}__b"] = engb_df[col_try].iloc[:len(ref_df)].values
                     break
 
+        # Time-range filter (before downsample)
+        if (start_ts or end_ts) and "ts" in combined.columns:
+            ts_parsed = pd.to_datetime(combined["ts"], errors="coerce")
+            mask = pd.Series(True, index=combined.index)
+            if start_ts:
+                mask &= ts_parsed >= pd.to_datetime(start_ts)
+            if end_ts:
+                mask &= ts_parsed <= pd.to_datetime(end_ts)
+            combined = combined.loc[mask].reset_index(drop=True)
+
         # Downsample
         if downsample > 1:
             combined = combined.iloc[::downsample]
@@ -1638,6 +1674,15 @@ def beta_sensor_quality(system_id):
         sub_combined["system_score"] = sub_df[score_col].round(6).values
         if thresh_col in sub_df.columns:
             sub_combined["adaptive_threshold"] = sub_df[thresh_col].round(6).values
+        # Time-range filter
+        if (start_ts or end_ts) and "ts" in sub_combined.columns:
+            ts_parsed = pd.to_datetime(sub_combined["ts"], errors="coerce")
+            mask = pd.Series(True, index=sub_combined.index)
+            if start_ts:
+                mask &= ts_parsed >= pd.to_datetime(start_ts)
+            if end_ts:
+                mask &= ts_parsed <= pd.to_datetime(end_ts)
+            sub_combined = sub_combined.loc[mask].reset_index(drop=True)
         if downsample > 1:
             sub_combined = sub_combined.iloc[::downsample]
         sub_combined = sanitize_df(sub_combined)
@@ -1745,6 +1790,56 @@ def beta_subsystem_behavior(system_id):
         "sensors": sensor_cols,
         "downtime_bands": downtime_bands,
         "alarm_bands": [],
+    })
+
+
+@app.route("/api/beta/sensor_contributions/<system_id>", methods=["GET"])
+def beta_sensor_contributions(system_id):
+    """Return per-sensor AE contribution time series for a subsystem, normalized to stack to system score."""
+    downsample = request.args.get("downsample", default=1, type=int)
+
+    df, ts_col = beta_load_csv_with_ts("detailed_system_sensor_scores.csv")
+    if df.empty or not ts_col:
+        return jsonify({"sensors": [], "timeseries": [], "timestamp_col": "ts"})
+
+    # Find contribution columns for this system: {system_id}__{sensor}__AE_Contribution
+    prefix = f"{system_id}__"
+    contrib_cols = [c for c in df.columns if c.startswith(prefix) and c.endswith("__AE_Contribution")]
+    if not contrib_cols:
+        return jsonify({"sensors": [], "timeseries": [], "timestamp_col": "ts"})
+
+    # Extract sensor names
+    sensors = [c.replace(prefix, "").replace("__AE_Contribution", "") for c in contrib_cols]
+
+    # System score column
+    score_col = f"{system_id}__System_Score"
+    has_score = score_col in df.columns
+
+    # Build output
+    combined = pd.DataFrame()
+    combined["ts"] = df[ts_col].astype(str).values
+    if has_score:
+        combined["system_score"] = df[score_col].values
+
+    # Normalize contributions so they stack to system_score
+    contrib_raw = df[contrib_cols].copy()
+    contrib_raw.columns = sensors
+    total = contrib_raw.sum(axis=1).replace(0, float("nan"))
+    if has_score:
+        for s in sensors:
+            combined[s] = (contrib_raw[s] / total * df[score_col]).values
+    else:
+        for s in sensors:
+            combined[s] = contrib_raw[s].values
+
+    if downsample > 1:
+        combined = combined.iloc[::downsample]
+
+    combined = sanitize_df(combined)
+    return jsonify({
+        "sensors": sensors,
+        "timeseries": combined.to_dict(orient="records"),
+        "timestamp_col": "ts",
     })
 
 
@@ -1939,6 +2034,222 @@ def beta_normal_periods():
 @app.route("/api/beta/systems", methods=["GET"])
 def beta_systems():
     return beta_subsystems()
+
+
+@app.route("/api/beta/radar_fingerprints", methods=["GET"])
+def beta_radar_fingerprints():
+    """Compute per-subsystem radar fingerprint data from detailed_system_sensor_scores.csv.
+
+    For each subsystem, finds alarm windows, picks the one with highest peak risk,
+    and returns mean AE_Contribution per sensor during that window.
+    Also enriches with subsystem_summary.csv and system_summary.csv stats.
+    """
+    scores_df, scores_ts = beta_load_csv_with_ts("detailed_system_sensor_scores.csv")
+    catalog_df = beta_load_csv("dynamic_catalog.csv")
+
+    if scores_df.empty or catalog_df.empty:
+        return jsonify({"fingerprints": []})
+
+    # Load enrichment data
+    sub_summary = beta_load_csv("subsystem_summary.csv")
+    sys_summary = beta_load_csv("system_summary.csv")
+
+    sub_lookup = {}
+    if not sub_summary.empty and "Subsystem" in sub_summary.columns:
+        for _, row in sub_summary.iterrows():
+            sub_lookup[row["Subsystem"]] = row.to_dict()
+
+    sys_lookup = {}
+    if not sys_summary.empty and "System_ID" in sys_summary.columns:
+        for _, row in sys_summary.iterrows():
+            sys_lookup[row["System_ID"]] = row.to_dict()
+
+    grouped = catalog_df.groupby("system")["sensor"].apply(list).to_dict()
+    fingerprints = []
+
+    for sys_label, sensors in sorted(grouped.items()):
+        if sys_label == "ISOLATED":
+            continue
+
+        prefix = f"{sys_label}__"
+        alarm_col = f"{prefix}System_Alarm"
+        score_col = f"{prefix}System_Score"
+        conf_col = f"{prefix}System_Confidence"
+        thresh_col = f"{prefix}Adaptive_Threshold"
+        sigma_col = f"{prefix}Baseline_Sigma"
+
+        if alarm_col not in scores_df.columns or score_col not in scores_df.columns:
+            continue
+
+        alarm_s = scores_df[alarm_col].fillna(0).astype(int)
+        risk_s = pd.to_numeric(scores_df[score_col], errors="coerce").fillna(0)
+
+        # Latest row snapshot for current state
+        last_valid_idx = scores_df[score_col].dropna().index
+        latest = {}
+        if len(last_valid_idx):
+            li = last_valid_idx[-1]
+            latest["current_score"] = round(float(risk_s.iloc[li]), 6) if li < len(risk_s) else None
+            if conf_col in scores_df.columns:
+                v = scores_df[conf_col].iloc[li]
+                latest["confidence"] = round(float(v), 4) if pd.notna(v) else None
+            if thresh_col in scores_df.columns:
+                v = scores_df[thresh_col].iloc[li]
+                latest["threshold"] = round(float(v), 6) if pd.notna(v) else None
+            if sigma_col in scores_df.columns:
+                v = scores_df[sigma_col].iloc[li]
+                latest["baseline_sigma"] = round(float(v), 6) if pd.notna(v) else None
+            latest["current_alarm"] = int(alarm_s.iloc[li])
+
+            # Top ranked sensors from latest row
+            top_sensors = []
+            for rk in range(1, 6):
+                s_col = f"{prefix}_Rank_{rk}_Sensor"
+                sc_col = f"{prefix}_Rank_{rk}_Score"
+                pct_col = f"{prefix}_Rank_{rk}_Pct"
+                if s_col in scores_df.columns:
+                    sname = scores_df[s_col].iloc[li]
+                    if pd.notna(sname):
+                        sc_val = float(scores_df[sc_col].iloc[li]) if sc_col in scores_df.columns and pd.notna(scores_df[sc_col].iloc[li]) else None
+                        pct_val = float(scores_df[pct_col].iloc[li]) if pct_col in scores_df.columns and pd.notna(scores_df[pct_col].iloc[li]) else None
+                        top_sensors.append({"rank": rk, "sensor": str(sname), "score": round(sc_val, 6) if sc_val is not None else None, "pct": round(pct_val, 2) if pct_val is not None else None})
+            if top_sensors:
+                latest["top_sensors"] = top_sensors
+
+        # Per-sensor trust and SQS from latest row
+        sensor_meta = {}
+        if len(last_valid_idx):
+            li = last_valid_idx[-1]
+            for s in sensors:
+                sm = {}
+                trust_col = f"{prefix}{s}__Trust"
+                sqs_col = f"{prefix}{s}__SQS"
+                if trust_col in scores_df.columns:
+                    v = scores_df[trust_col].iloc[li]
+                    sm["trust"] = str(v) if pd.notna(v) else None
+                if sqs_col in scores_df.columns:
+                    v = scores_df[sqs_col].iloc[li]
+                    sm["sqs"] = round(float(v), 4) if pd.notna(v) else None
+                if sm:
+                    sensor_meta[s] = sm
+
+        # Enrichment from subsystem_summary.csv
+        summary_info = {}
+        if sys_label in sub_lookup:
+            row = sub_lookup[sys_label]
+            for k in ["Sensors", "Score_Mean", "Thresh_Mean", "High%", "High_Count", "Alarms", "Top_Alarm_Contributor", "Confidence", "Baseline_\u03c3"]:
+                v = row.get(k)
+                if v is not None and str(v) != "N/A" and str(v) != "nan":
+                    summary_info[k.lower().replace("%", "_pct").replace("\u03c3", "sigma")] = v
+
+        # Enrichment from system_summary.csv
+        model_info = {}
+        if sys_label in sys_lookup:
+            row = sys_lookup[sys_label]
+            for k in ["R2_Adj_Mean", "R2_Adj_Min", "Quality", "Cohesion_C", "N_Variables"]:
+                v = row.get(k)
+                if v is not None and str(v) != "nan":
+                    model_info[k.lower()] = v
+
+        # Find contiguous alarm windows
+        diff = alarm_s.diff()
+        starts = alarm_s.index[diff == 1].tolist()
+        ends = alarm_s.index[diff == -1].tolist()
+        if alarm_s.iloc[-1] == 1:
+            ends.append(alarm_s.index[-1])
+        if alarm_s.iloc[0] == 1 and (not starts or (ends and ends[0] < starts[0])):
+            starts.insert(0, alarm_s.index[0])
+
+        base_entry = {
+            "system_id": sys_label,
+            "sensor_count": len(sensors),
+            "latest": latest,
+            "sensor_meta": sensor_meta,
+            "summary": summary_info,
+            "model": model_info,
+        }
+
+        # Determine which column to use: prefer Sigma_Score, fall back to AE_Contribution
+        def _sensor_col(s):
+            sigma_col = f"{prefix}{s}__Sigma_Score"
+            ae_col = f"{prefix}{s}__AE_Contribution"
+            if sigma_col in scores_df.columns:
+                return sigma_col
+            return ae_col if ae_col in scores_df.columns else None
+
+        if not starts or not ends:
+            data_cols = {s: _sensor_col(s) for s in sensors}
+            exist_cols = [c for c in data_cols.values() if c is not None]
+            if not exist_cols:
+                continue
+            last_valid = scores_df[exist_cols].dropna(how="all")
+            if last_valid.empty:
+                continue
+            last_row = last_valid.iloc[-1]
+            sensor_data = []
+            for s in sensors:
+                col = data_cols[s]
+                val = float(last_row.get(col, 0)) if col and col in last_row.index else 0
+                sensor_data.append({"sensor": s, "value": round(val, 6)})
+            fingerprints.append({
+                **base_entry,
+                "sensors": sensor_data,
+                "has_alarm": False,
+                "peak_risk": float(risk_s.max()),
+                "alarm_count": 0,
+            })
+            continue
+
+        # Find peak alarm event
+        best_peak = -1
+        best_start = starts[0]
+        best_end = ends[0]
+        for s_idx, e_idx in zip(starts, ends):
+            window_risk = risk_s.iloc[s_idx:e_idx + 1]
+            peak = float(window_risk.max()) if len(window_risk) else 0
+            if peak > best_peak:
+                best_peak = peak
+                best_start = s_idx
+                best_end = e_idx
+
+        # Mean per-sensor value in peak alarm window (Sigma_Score preferred)
+        sensor_data = []
+        for s in sensors:
+            col = _sensor_col(s)
+            if col:
+                window_vals = pd.to_numeric(scores_df[col].iloc[best_start:best_end + 1], errors="coerce").dropna()
+                val = float(window_vals.mean()) if len(window_vals) else 0
+            else:
+                val = 0
+            sensor_data.append({"sensor": s, "value": round(val, 6)})
+
+        event_info = {}
+        if scores_ts and scores_ts in scores_df.columns:
+            event_info["event_start"] = str(scores_df[scores_ts].iloc[best_start])
+            event_info["event_end"] = str(scores_df[scores_ts].iloc[best_end])
+
+        fingerprints.append({
+            **base_entry,
+            "sensors": sensor_data,
+            "has_alarm": True,
+            "peak_risk": round(best_peak, 6),
+            "alarm_count": len(starts),
+            **event_info,
+        })
+
+    # sanitize NaN/Inf in nested structures
+    import json
+    import math
+    def _clean(obj):
+        if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+            return None
+        if isinstance(obj, dict):
+            return {k: _clean(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_clean(v) for v in obj]
+        return obj
+
+    return jsonify({"fingerprints": _clean(fingerprints)})
 
 
 @app.route("/api/beta/alerts_sensor_level", methods=["GET"])

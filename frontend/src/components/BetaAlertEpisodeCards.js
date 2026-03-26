@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import GlassCard from './GlassCard';
 import InfoTooltip from './InfoTooltip';
-import { getBetaAlerts } from '../utils/api';
+import { getBetaAlerts, getBetaRadarFingerprints } from '../utils/api';
 import {
   formatDuration,
   formatScore,
@@ -311,7 +311,14 @@ const getAlertSortRank = (alert) => {
   return order[displaySeverity] ?? -1;
 };
 
-function BetaAlertEpisodeCards({ onSelectAlert, selectedDay }) {
+const timeBadgeStyle = {
+  fontSize: '12px', fontWeight: 600, color: '#1B5E20',
+  background: 'rgba(129,199,132,0.15)', border: '1px solid rgba(129,199,132,0.3)',
+  borderRadius: '8px', padding: '5px 14px', marginLeft: 'auto',
+  whiteSpace: 'nowrap', letterSpacing: '0.02em', cursor: 'pointer',
+};
+
+function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilterClick }) {
   const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [alarmView, setAlarmView] = useState('minute');
@@ -319,7 +326,26 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay }) {
   const [classFilter, setClassFilter] = useState('ALL');
   const [sortBy, setSortBy] = useState('RECENT');
   const [expanded, setExpanded] = useState(false);
+  const [fingerprints, setFingerprints] = useState([]);
   const headerRef = useRef(null);
+
+  useEffect(() => {
+    getBetaRadarFingerprints()
+      .then((res) => setFingerprints((res.data.fingerprints || []).filter(f => f.has_alarm && f.event_start)))
+      .catch(() => setFingerprints([]));
+  }, []);
+
+  const isPeakAlarm = useCallback((alert) => {
+    if (!fingerprints.length) return false;
+    const aStart = new Date(alert.start_ts).getTime();
+    const aEnd = new Date(alert.end_ts).getTime();
+    return fingerprints.some(fp => {
+      if (fp.system_id !== alert.class) return false;
+      const fStart = new Date(fp.event_start).getTime();
+      const fEnd = new Date(fp.event_end).getTime();
+      return aStart <= fEnd && aEnd >= fStart;
+    });
+  }, [fingerprints]);
 
   useEffect(() => {
     let cancelled = false;
@@ -424,6 +450,7 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay }) {
             ? 'Each card represents one dynamic contiguous alarm span built from source minute-level subsystem alarms.'
             : 'Each card represents one source minute-level system alarm row from the subsystem alarm data.'} />
         </div>
+        {filterLabel && <span style={timeBadgeStyle} onClick={onFilterClick}>{filterLabel}</span>}
         {hasActiveFilter && (
           <motion.button
             onClick={clearFilters}
@@ -584,9 +611,17 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay }) {
                     layout
                   >
                     <div style={styles.cardHeaderRow}>
-                      <div style={{ display: 'flex', gap: '6px' }}>
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                         <span style={styles.severityBadge(displaySeverity)}>{displaySeverity}</span>
                         <span style={styles.classBadge(alert.class)}>{alert.class}</span>
+                        {isSpanView && isPeakAlarm(alert) && (
+                          <span style={{
+                            fontSize: '9px', fontWeight: 700, color: '#fff',
+                            background: 'linear-gradient(135deg, #E65100, #FF6D00)',
+                            padding: '2px 7px', borderRadius: '8px', letterSpacing: '0.04em',
+                            textTransform: 'uppercase', whiteSpace: 'nowrap',
+                          }}>Peak Alarm</span>
+                        )}
                       </div>
                     </div>
 

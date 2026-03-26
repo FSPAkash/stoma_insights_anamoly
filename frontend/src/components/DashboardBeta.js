@@ -6,6 +6,7 @@ import BetaAlertEpisodeCards from './BetaAlertEpisodeCards';
 import BetaAlertDetailModal from './BetaAlertDetailModal';
 import SensorQualityGrid from './SensorQualityGrid';
 import SubsystemBehaviorChartBeta from './SubsystemBehaviorChartBeta';
+import SensorValidationReport from './SensorValidationReport';
 import FeedbackWidget from './FeedbackWidget';
 import TimeFilter from './TimeFilter';
 import useTimeFilter from '../hooks/useTimeFilter';
@@ -16,6 +17,7 @@ import {
 } from '../utils/api';
 
 const BETA_FEEDBACK_SECTIONS = [
+  { id: 'sensor_validation', label: 'Sensor Validation', desc: 'Initial per-sensor quality checks, pass/fail results, and removal reasons' },
   { id: 'pipeline_overview', label: 'Pipeline Overview', desc: 'Overview cards, high-level health, and summary stats' },
   { id: 'sensor_quality_plots', label: 'Sensor Quality Plots', desc: 'Subsystem score, sensor breakdown, alarm overlays, and chart interactions' },
   { id: 'subsystem_behavior', label: 'Subsystem Behavior', desc: 'Raw sensor traces, downtime bands, alarm overlays, and click-through behavior' },
@@ -224,6 +226,13 @@ function DashboardBeta({ user, onLogout }) {
             </div>
           ) : (
             <>
+              {/* Sensor Validation Report */}
+              <div style={styles.sectionDivider} />
+              <div style={styles.sectionWrap}>
+                <div style={styles.sectionLabel}>Sensor Validation</div>
+                <SensorValidationReport />
+              </div>
+
               {/* Pipeline Overview */}
               <div style={styles.sectionDivider} />
               <div style={styles.sectionWrap}>
@@ -280,6 +289,8 @@ function DashboardBeta({ user, onLogout }) {
                 <BetaAlertEpisodeCards
                   onSelectAlert={setSelectedAlert}
                   selectedDay={timeFilter.selectedDay}
+                  filterLabel={timeFilter.filterLabel}
+                  onFilterClick={() => setFilterOpen(true)}
                 />
               </div>
 
