@@ -19,10 +19,13 @@ import {
 const BETA_FEEDBACK_SECTIONS = [
   { id: 'sensor_validation', label: 'Sensor Validation', desc: 'Initial per-sensor quality checks, pass/fail results, and removal reasons' },
   { id: 'pipeline_overview', label: 'Pipeline Overview', desc: 'Overview cards, high-level health, and summary stats' },
-  { id: 'sensor_quality_plots', label: 'Sensor Quality Plots', desc: 'Subsystem score, sensor breakdown, alarm overlays, and chart interactions' },
+  { id: 'sensor_quality_plots', label: 'Sensor Quality Plots', desc: 'Subsystem score, sensor breakdown, alarm overlays, isolated sensor handling, and chart interactions' },
+  { id: 'radar_fingerprints', label: 'Radar Fingerprints', desc: 'Radar chart overlays showing sensor fault signatures during alarm events' },
   { id: 'subsystem_behavior', label: 'Subsystem Behavior', desc: 'Raw sensor traces, downtime bands, alarm overlays, and click-through behavior' },
-  { id: 'system_alarms', label: 'System Alarms', desc: 'Alarm cards, minute vs span view, filters, sorting, and expand/collapse' },
-  { id: 'system_alarm_detail', label: 'System Alarm Detail', desc: 'Alarm detail modal, sensor rankings, severity mix, and decomposition' },
+  { id: 'system_alarms', label: 'System Alarms', desc: 'Alarm cards, minute vs span view, filters, sorting, expand/collapse, and alarm info details' },
+  { id: 'system_alarm_detail', label: 'System Alarm Detail', desc: 'Alarm detail modal, sensor rankings, severity mix, radar fingerprints, and decomposition' },
+  { id: 'isolated_sensors', label: 'Isolated Sensors', desc: 'Isolated sensor selection, exclusion from subsystem scores, and standalone quality views' },
+  { id: 'loading_overlays', label: 'Loading & Transitions', desc: 'Loading overlays, data refresh indicators, and panel transition behavior' },
   { id: 'time_filter', label: 'Time Filter', desc: 'Floating day and time filter controls across the dashboard' },
   { id: 'overall_beta_dashboard', label: 'Overall Beta Dashboard', desc: 'General usability, clarity, responsiveness, and confidence in the experience' },
 ];
