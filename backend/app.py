@@ -1508,22 +1508,37 @@ def _beta_build_alert_tables_for_view(alarm_view):
     return alerts_df, sensors_df
 
 
-# Pre-load beta data files into cache at import time (prefers parquet, falls back to CSV)
-print("Pre-loading beta data files into cache...")
-for _pf in ["dynamic_catalog.csv", "dynamic_weights.csv", "sensor_config.csv",
-            "df_chart_data.csv", "alerts.csv", "alerts_sensor_level.csv",
-            "detailed_sqs.csv", "detailed_engine_a.csv",
-            "detailed_engine_b.csv", "detailed_subsystem_scores.csv",
-            "detailed_subsystem_alarms.csv"]:
-    beta_load_csv(_pf)
-    beta_load_csv_with_ts(_pf)
-try:
-    _beta_build_alert_tables_for_view("minute")
-    _beta_build_alert_tables_for_view("span")
-    print("Beta alert table cache warm complete.")
-except Exception as _warm_err:
-    print(f"Beta alert cache warm skipped: {_warm_err}")
-print("Beta data pre-load complete.")
+def maybe_preload_beta_data():
+    """
+    Optional warmup for local/dev use.
+    Disabled by default because eager loading large beta datasets can exceed
+    memory limits on small hosts (for example 512MB Render instances).
+    """
+    preload_flag = str(os.environ.get("BETA_PRELOAD_ON_STARTUP", "")).strip().lower()
+    should_preload = preload_flag in {"1", "true", "yes", "on"}
+    if not should_preload:
+        print("Beta data pre-load skipped (BETA_PRELOAD_ON_STARTUP not enabled).")
+        return
+
+    print("Pre-loading beta data files into cache...")
+    for _pf in ["dynamic_catalog.csv", "dynamic_weights.csv", "sensor_config.csv",
+                "df_chart_data.csv", "alerts.csv", "alerts_sensor_level.csv",
+                "detailed_sqs.csv", "detailed_engine_a.csv",
+                "detailed_engine_b.csv", "detailed_subsystem_scores.csv",
+                "detailed_subsystem_alarms.csv"]:
+        beta_load_csv(_pf)
+        beta_load_csv_with_ts(_pf)
+    try:
+        _beta_build_alert_tables_for_view("minute")
+        _beta_build_alert_tables_for_view("span")
+        print("Beta alert table cache warm complete.")
+    except Exception as _warm_err:
+        print(f"Beta alert cache warm skipped: {_warm_err}")
+    print("Beta data pre-load complete.")
+
+
+# Optional pre-load at import time only when explicitly enabled.
+maybe_preload_beta_data()
 
 
 @app.route("/api/beta/login", methods=["POST"])
@@ -2483,16 +2498,8 @@ if __name__ == "__main__":
         else:
             print(f"  [MISSING] {fname}")
 
-    # Pre-load beta data files into cache at startup to avoid slow first requests
-    print("Pre-loading beta data files...")
-    for bfname in ["dynamic_catalog.csv", "dynamic_weights.csv", "sensor_config.csv",
-                    "df_chart_data.csv", "alerts.csv", "alerts_sensor_level.csv",
-                    "detailed_sqs.csv", "detailed_engine_a.csv",
-                    "detailed_engine_b.csv", "detailed_subsystem_scores.csv",
-                    "detailed_subsystem_alarms.csv"]:
-        beta_load_csv(bfname)
-        beta_load_csv_with_ts(bfname)
-    print("Beta data pre-load complete.")
+    # Optional warmup for local runs; disabled unless explicitly enabled.
+    maybe_preload_beta_data()
 
     backend_host = os.environ.get("HOST", "0.0.0.0")
     backend_port = int(os.environ.get("PORT", "5000"))
