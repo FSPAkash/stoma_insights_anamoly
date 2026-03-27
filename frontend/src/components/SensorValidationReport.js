@@ -6,99 +6,20 @@ import InfoTooltip from './InfoTooltip';
 import { getBetaSensorValidationReport } from '../utils/api';
 import { formatSensorName } from '../utils/formatters';
 
-const pct = (v) => `${(v * 100).toFixed(1)}%`;
+function parseReasonText(raw) {
+  if (!raw) return 'Removed by validation checks';
+  const humanReadable = raw
+    .split(' | ')
+    .map((chunk) => chunk.trim())
+    .filter(Boolean)
+    .map((chunk) => {
+      if (chunk.startsWith('HIGH_MISSINGNESS')) return 'Too much missing data';
+      if (chunk.startsWith('CONSTANT_SIGNAL')) return 'No meaningful change detected';
+      if (chunk.startsWith('NEAR_CONSTANT')) return 'Almost all readings identical';
+      return chunk.replace(/_/g, ' ').toLowerCase();
+    });
 
-function parseReasons(raw) {
-  if (!raw) return [];
-  return raw.split(' | ').map(chunk => {
-    if (chunk.startsWith('HIGH_MISSINGNESS')) {
-      const m = chunk.match(/missing_ratio=([\d.]+)\s*>\s*([\d.]+)/);
-      return {
-        label: 'Data Coverage',
-        desc: 'Too much missing data',
-        actual: m ? parseFloat(m[1]) : null,
-        threshold: m ? parseFloat(m[2]) : null,
-        displayActual: m ? pct(1 - parseFloat(m[1])) : '--',
-        displayThreshold: m ? `> ${pct(1 - parseFloat(m[2]))}` : '--',
-        gaugeValue: m ? 1 - parseFloat(m[1]) : 0,
-        gaugeMax: m ? 1 - parseFloat(m[2]) : 0.6,
-        color: '#EF5350',
-      };
-    }
-    if (chunk.startsWith('CONSTANT_SIGNAL')) {
-      const m = chunk.match(/std=([\d.e+-]+)\s*<\s*([\d.e+-]+)/);
-      return {
-        label: 'Signal Variance',
-        desc: 'No meaningful change detected',
-        actual: m ? parseFloat(m[1]) : null,
-        displayActual: m ? parseFloat(m[1]).toExponential(1) : '--',
-        displayThreshold: m ? `> ${parseFloat(m[2]).toExponential(0)}` : '--',
-        gaugeValue: 0,
-        gaugeMax: 1,
-        color: '#EF5350',
-      };
-    }
-    if (chunk.startsWith('NEAR_CONSTANT')) {
-      const m = chunk.match(/unique_ratio=([\d.]+)\s*<\s*([\d.]+)/);
-      return {
-        label: 'Signal Diversity',
-        desc: 'Almost all readings identical',
-        actual: m ? parseFloat(m[1]) : null,
-        displayActual: m ? pct(parseFloat(m[1])) : '--',
-        displayThreshold: m ? `> ${pct(parseFloat(m[2]))}` : '--',
-        gaugeValue: m ? parseFloat(m[1]) : 0,
-        gaugeMax: m ? parseFloat(m[2]) : 0.01,
-        color: '#EF5350',
-      };
-    }
-    return { label: chunk, desc: '', displayActual: '--', displayThreshold: '--', gaugeValue: 0, gaugeMax: 1, color: '#EF5350' };
-  });
-}
-
-function MiniGauge({ value, max, color, size = 48 }) {
-  const normalized = max > 0 ? Math.min(Math.max(value / max, 0), 1) : 0;
-  const cx = size / 2;
-  const cy = size / 2;
-  const r = size / 2 - 8;
-  const arcPath = (startAngle, endAngle) => {
-    const s = ((startAngle - 90) * Math.PI) / 180;
-    const e = ((endAngle - 90) * Math.PI) / 180;
-    const x1 = cx + r * Math.cos(s);
-    const y1 = cy + r * Math.sin(s);
-    const x2 = cx + r * Math.cos(e);
-    const y2 = cy + r * Math.sin(e);
-    const largeArc = endAngle - startAngle > 180 ? 1 : 0;
-    return `M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}`;
-  };
-  const needleAngle = -120 + normalized * 240;
-  const needleRad = ((needleAngle - 90) * Math.PI) / 180;
-  const needleEnd = { x: cx + (r - 4) * Math.cos(needleRad), y: cy + (r - 4) * Math.sin(needleRad) };
-  const ticks = [];
-  for (let i = 0; i <= 10; i++) {
-    const tickAngle = -120 + i * 24;
-    const rad = ((tickAngle - 90) * Math.PI) / 180;
-    const outerR = r + 2;
-    const innerR = r - (i % 5 === 0 ? 3 : 1.5);
-    ticks.push(
-      <line key={i}
-        x1={cx + innerR * Math.cos(rad)} y1={cy + innerR * Math.sin(rad)}
-        x2={cx + outerR * Math.cos(rad)} y2={cy + outerR * Math.sin(rad)}
-        stroke={i % 5 === 0 ? '#4A524A' : '#B0B8B0'}
-        strokeWidth={i % 5 === 0 ? 1 : 0.5} strokeLinecap="round"
-      />
-    );
-  }
-  return (
-    <svg width={size} height={size * 0.75} viewBox={`0 0 ${size} ${size * 0.85}`} style={{ flexShrink: 0 }}>
-      <path d={arcPath(-120, 120)} fill="none" stroke="#E8ECE8" strokeWidth="3.5" strokeLinecap="round" />
-      {normalized > 0.005 && (
-        <path d={arcPath(-120, -120 + normalized * 240)} fill="none" stroke={color} strokeWidth="3.5" strokeLinecap="round" opacity="0.8" />
-      )}
-      {ticks}
-      <line x1={cx} y1={cy} x2={needleEnd.x} y2={needleEnd.y} stroke="#1A1F1A" strokeWidth="1.2" strokeLinecap="round" />
-      <circle cx={cx} cy={cy} r="2" fill="#1A1F1A" />
-    </svg>
-  );
+  return [...new Set(humanReadable)].join(' | ') || 'Removed by validation checks';
 }
 
 function FailedInfoButton({ sensor }) {
@@ -106,7 +27,7 @@ function FailedInfoButton({ sensor }) {
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const triggerRef = useRef(null);
   const tooltipRef = useRef(null);
-  const reasons = parseReasons(sensor.removal_reasons);
+  const reasonText = parseReasonText(sensor.removal_reasons);
 
   const reposition = useCallback(() => {
     if (!triggerRef.current) return;
@@ -151,42 +72,23 @@ function FailedInfoButton({ sensor }) {
           style={{
             position: 'fixed', top: pos.top, left: pos.left, zIndex: 99999,
             background: 'rgba(255,255,255,0.97)', backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
-            border: '1px solid rgba(203,230,200,0.6)', borderRadius: '14px',
-            padding: '14px 16px', boxShadow: '0 12px 40px rgba(27,94,32,0.15), 0 4px 12px rgba(27,94,32,0.08)',
-            minWidth: '240px', maxWidth: '300px', pointerEvents: 'none',
+            border: '1px solid rgba(203,230,200,0.6)', borderRadius: '12px',
+            padding: '8px 12px', boxShadow: '0 8px 24px rgba(27,94,32,0.14), 0 3px 10px rgba(27,94,32,0.08)',
+            width: 'max-content', maxWidth: 'min(90vw, 360px)', pointerEvents: 'none',
           }}
         >
-          <div style={{ fontSize: '11.5px', fontWeight: 700, color: '#C62828', marginBottom: '2px' }}>
-            {formatSensorName(sensor.sensor)}
-          </div>
-          <div style={{ fontSize: '10px', color: '#8A928A', marginBottom: '6px' }}>
-            Coverage {pct(1 - sensor.missing_ratio)} -- Diversity {pct(sensor.unique_ratio)}
-          </div>
-          <div style={{ borderTop: '1px solid rgba(0,0,0,0.05)', paddingTop: '8px' }}>
-            {reasons.map((r, i) => (
-              <div key={i} style={{
-                display: 'flex', alignItems: 'center', gap: '10px',
-                paddingTop: i > 0 ? '8px' : 0,
-                marginTop: i > 0 ? '8px' : 0,
-                borderTop: i > 0 ? '1px solid rgba(0,0,0,0.04)' : 'none',
-              }}>
-                <MiniGauge value={r.gaugeValue} max={r.gaugeMax} color={r.color} size={48} />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: '11px', fontWeight: 600, color: '#2D332D' }}>{r.label}</div>
-                  <div style={{ fontSize: '9.5px', color: '#6B736B', marginBottom: '3px' }}>{r.desc}</div>
-                  <div style={{ display: 'flex', gap: '10px', fontSize: '9.5px' }}>
-                    <span>
-                      <span style={{ color: '#8A928A' }}>Actual </span>
-                      <span style={{ fontWeight: 700, color: '#C62828' }}>{r.displayActual}</span>
-                    </span>
-                    <span>
-                      <span style={{ color: '#8A928A' }}>Required </span>
-                      <span style={{ fontWeight: 600, color: '#2D332D' }}>{r.displayThreshold}</span>
-                    </span>
-                  </div>
-                </div>
-              </div>
-            ))}
+          <div
+            title={reasonText}
+            style={{
+              fontSize: '11px',
+              color: '#6B736B',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              maxWidth: '100%',
+            }}
+          >
+            {reasonText}
           </div>
         </div>,
         document.body

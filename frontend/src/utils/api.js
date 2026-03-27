@@ -17,6 +17,16 @@ api.interceptors.response.use((response) => {
   return response;
 });
 
+// In-flight request dedup: prevents identical GET requests from firing concurrently
+const _inflight = new Map();
+function dedupGet(url, config = {}) {
+  const key = url + JSON.stringify(config.params || {});
+  if (_inflight.has(key)) return _inflight.get(key);
+  const promise = api.get(url, config).finally(() => _inflight.delete(key));
+  _inflight.set(key, promise);
+  return promise;
+}
+
 export const login = (username, password) =>
   api.post('/login', { username, password });
 
@@ -83,22 +93,22 @@ export const getBetaSensorValidationReport = () =>
 export const getBetaSubsystems = () =>
   api.get('/beta/subsystems');
 
-export const getBetaSensorQuality = (systemId, downsample = 1, params = {}) =>
+export const getBetaSensorQuality = (systemId, downsample = 40, params = {}) =>
   api.get(`/beta/sensor_quality/${encodeURIComponent(systemId)}`, { params: { downsample, ...params } });
 
-export const getBetaSensorQualityWindow = (systemId, startTs, endTs, downsample = 1) =>
+export const getBetaSensorQualityWindow = (systemId, startTs, endTs, downsample = 4) =>
   api.get(`/beta/sensor_quality/${encodeURIComponent(systemId)}`, { params: { downsample, start_ts: startTs, end_ts: endTs } });
 
-export const getBetaSubsystemScores = (downsample = 1) =>
+export const getBetaSubsystemScores = (downsample = 40) =>
   api.get('/beta/subsystem_scores', { params: { downsample } });
 
 export const getBetaAeMetadata = () =>
   api.get('/beta/ae_metadata');
 
 export const getBetaAlerts = (params = {}) =>
-  api.get('/beta/alerts', { params });
+  dedupGet('/beta/alerts', { params });
 
-export const getBetaScoresTimeseries = (downsample = 1) =>
+export const getBetaScoresTimeseries = (downsample = 40) =>
   api.get('/beta/scores/timeseries', { params: { downsample } });
 
 export const getBetaDashboardSummary = (params = {}) =>
@@ -113,19 +123,19 @@ export const getBetaNormalPeriods = () =>
 export const getBetaSystems = () =>
   api.get('/beta/systems');
 
-export const getBetaSubsystemBehavior = (systemId, downsample = 1, params = {}) =>
+export const getBetaSubsystemBehavior = (systemId, downsample = 40, params = {}) =>
   api.get(`/beta/subsystem_behavior/${encodeURIComponent(systemId)}`, { params: { downsample, ...params } });
 
 export const getBetaAlertsSensorLevel = (params = {}) =>
-  api.get('/beta/alerts_sensor_level', { params });
+  dedupGet('/beta/alerts_sensor_level', { params });
 
 export const getBetaRadarFingerprints = () =>
-  api.get('/beta/radar_fingerprints');
+  dedupGet('/beta/radar_fingerprints');
 
-export const getBetaSensorContributions = (systemId, downsample = 1) =>
+export const getBetaSensorContributions = (systemId, downsample = 40) =>
   api.get(`/beta/sensor_contributions/${encodeURIComponent(systemId)}`, { params: { downsample } });
 
 export const getBetaRiskDecompositionForEpisode = (startTs, endTs) =>
-  api.get('/beta/risk_decomposition/episode', { params: { start_ts: startTs, end_ts: endTs } });
+  dedupGet('/beta/risk_decomposition/episode', { params: { start_ts: startTs, end_ts: endTs } });
 
 export default api;

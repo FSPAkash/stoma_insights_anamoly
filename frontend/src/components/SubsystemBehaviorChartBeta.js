@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   ResponsiveContainer,
   Line,
-  Area,
   XAxis,
   YAxis,
   Tooltip,
@@ -12,7 +11,7 @@ import {
 } from 'recharts';
 import GlassCard from './GlassCard';
 import InfoTooltip from './InfoTooltip';
-import { getBetaSubsystemBehavior, getBetaAlerts, getBetaSensorContributions } from '../utils/api';
+import { getBetaSubsystemBehavior, getBetaAlerts } from '../utils/api';
 import { formatSensorName, systemColor } from '../utils/formatters';
 
 const SENSOR_PALETTE = [
@@ -53,28 +52,6 @@ const styles = {
     borderRadius: '10px', padding: '10px 14px', marginBottom: '12px',
   },
 };
-
-const filterBadgeStyle = {
-  fontSize: '12px', fontWeight: 600, color: '#1B5E20',
-  background: 'rgba(129,199,132,0.15)', border: '1px solid rgba(129,199,132,0.3)',
-  borderRadius: '8px', padding: '5px 14px', marginLeft: 'auto',
-  whiteSpace: 'nowrap', letterSpacing: '0.02em', textTransform: 'none',
-};
-
-const controlPillStyle = (active, accent = '#1B5E20') => ({
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: '6px',
-  fontSize: '10px',
-  padding: '4px 12px',
-  borderRadius: '20px',
-  cursor: 'pointer',
-  border: active ? `1.5px solid ${accent}` : '1px solid rgba(203,230,200,0.6)',
-  background: active ? 'rgba(27,94,32,0.08)' : 'rgba(255,255,255,0.6)',
-  color: active ? accent : '#8A928A',
-  fontWeight: 600,
-  transition: 'all 0.2s',
-});
 
 const getAlarmStyle = (severity) => (
   severity === 'HIGH'
@@ -126,6 +103,15 @@ const buildAlarmSummary = (alarm) => {
   return mix ? `${minuteCount} alerts - ${mix}` : `${minuteCount} alerts`;
 };
 
+const parseUtcMs = (value) => {
+  if (value == null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const ms = Date.parse(normalized);
+  return Number.isNaN(ms) ? null : ms;
+};
+
 const CustomTooltip = ({ active, payload, downtimeBands, alarmBands, alarmView }) => {
   if (!active || !payload || !payload.length) return null;
   const row = payload[0]?.payload;
@@ -143,8 +129,8 @@ const CustomTooltip = ({ active, payload, downtimeBands, alarmBands, alarmView }
     const alarmStyle = getAlarmStyle(matchedAlarm.severity);
     zoneLabels.push({
       text: alarmView === 'span'
-        ? `Alarm Span -- ${matchedAlarm.severity}`
-        : `System Alarm -- ${matchedAlarm.severity}`,
+        ? `Anomaly Span -- ${matchedAlarm.severity}`
+        : `System Anomaly -- ${matchedAlarm.severity}`,
       color: alarmStyle.text,
       bg: alarmStyle.bg,
       border: alarmStyle.border,
@@ -186,8 +172,8 @@ const CustomTooltip = ({ active, payload, downtimeBands, alarmBands, alarmView }
   );
 };
 
-function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, isLatestMode, lastNHours, startTime, endTime, onZoomChange, onZoomReset, isZoomed, onSelectAlert, subsystems: subsystemsProp }) {
-  const [alarmView, setAlarmView] = useState('minute');
+function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, startTime, endTime, onZoomChange, onSelectAlert, subsystems: subsystemsProp }) {
+  const alarmView = 'span';
   const subsystems = useMemo(() => (subsystemsProp || []).filter(s => s.system_id !== 'ISOLATED'), [subsystemsProp]);
   const [selectedSystem, setSelectedSystem] = useState(null);
   const [sensorData, setSensorData] = useState(null);
@@ -195,13 +181,9 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
   const [alertsLoading, setAlertsLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [visibleSensors, setVisibleSensors] = useState({});
-  const [showContributions, setShowContributions] = useState(false);
-  const [contribData, setContribData] = useState(null);
-  const [contribLoading, setContribLoading] = useState(false);
   const [refAreaLeft, setRefAreaLeft] = useState(null);
   const [refAreaRight, setRefAreaRight] = useState(null);
   const behaviorCacheRef = useRef({});
-  const contribCacheRef = useRef({});
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef(null);
 
@@ -222,7 +204,7 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
     }
     setLoading(true);
     try {
-      const res = await getBetaSubsystemBehavior(systemId, 1);
+      const res = await getBetaSubsystemBehavior(systemId);
       behaviorCacheRef.current[systemId] = res.data;
       setSensorData(res.data);
       const vis = {};
@@ -239,27 +221,11 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
     if (selectedSystem) loadData(selectedSystem);
   }, [selectedSystem, loadData]);
 
-  // Fetch sensor contributions when toggle is on
   useEffect(() => {
-    if (!showContributions || !selectedSystem) return;
-    if (contribCacheRef.current[selectedSystem]) {
-      setContribData(contribCacheRef.current[selectedSystem]);
-      return;
-    }
-    setContribLoading(true);
-    getBetaSensorContributions(selectedSystem, 1)
-      .then((res) => {
-        contribCacheRef.current[selectedSystem] = res.data;
-        setContribData(res.data);
-      })
-      .catch(() => setContribData(null))
-      .finally(() => setContribLoading(false));
-  }, [showContributions, selectedSystem]);
-
-  useEffect(() => {
+    if (!selectedSystem) return;
     let cancelled = false;
     setAlertsLoading(true);
-    getBetaAlerts({ alarm_view: alarmView })
+    getBetaAlerts({ alarm_view: 'span', class: selectedSystem })
       .then((res) => {
         if (!cancelled) setAlerts(res.data.alerts || []);
       })
@@ -270,7 +236,7 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
         if (!cancelled) setAlertsLoading(false);
       });
     return () => { cancelled = true; };
-  }, [alarmView]);
+  }, [selectedSystem]);
 
   const toggleSensor = (sensor) => {
     setVisibleSensors((prev) => {
@@ -292,10 +258,13 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
       });
       if (isLatestMode && lastNHours < 24 && rows.length > 0) {
         const lastTs = rows[rows.length - 1][tsCol];
-        if (lastTs) {
-          const end = new Date(String(lastTs));
-          const start = new Date(end.getTime() - lastNHours * 60 * 60 * 1000);
-          rows = rows.filter((row) => new Date(String(row[tsCol])) >= start);
+        const endMs = parseUtcMs(lastTs);
+        if (endMs != null) {
+          const startMs = endMs - lastNHours * 60 * 60 * 1000;
+          rows = rows.filter((row) => {
+            const rowMs = parseUtcMs(row[tsCol]);
+            return rowMs != null && rowMs >= startMs;
+          });
         }
       } else if (!isLatestMode) {
         rows = rows.filter((row) => {
@@ -312,98 +281,98 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
     }));
   }, [sensorData, selectedDay, isLatestMode, lastNHours, startTime, endTime]);
 
-  const contribSensors = useMemo(() => contribData?.sensors || [], [contribData]);
-
-  // Merge contribution data into chartData by timestamp
-  const mergedChartData = useMemo(() => {
-    if (!showContributions || !contribData?.timeseries?.length || !chartData.length) return chartData;
-    const contribByTs = {};
-    for (const row of contribData.timeseries) {
-      const key = String(row.ts || '').substring(0, 16);
-      contribByTs[key] = row;
-    }
-    return chartData.map((row) => {
-      const key = String(row.fullTs || '').substring(0, 16);
-      const cr = contribByTs[key];
-      if (!cr) return row;
-      const merged = { ...row };
-      for (const s of contribSensors) {
-        merged[`_contrib_${s}`] = cr[s] ?? null;
-      }
-      if (cr.system_score != null) merged._contribScore = cr.system_score;
-      return merged;
-    });
-  }, [chartData, contribData, contribSensors, showContributions]);
-
-  const findClosestIdx = useCallback((targetTs, data) => {
+  const findClosestIdx = useCallback((targetMs, data) => {
     if (!data.length) return null;
-    const target = new Date(targetTs).getTime();
-    let best = 0, bestDiff = Math.abs(new Date(data[0].fullTs).getTime() - target);
-    for (let i = 1; i < data.length; i++) {
-      const diff = Math.abs(new Date(data[i].fullTs).getTime() - target);
+    if (targetMs == null || Number.isNaN(targetMs)) return null;
+    let best = null;
+    let bestDiff = Infinity;
+    for (let i = 0; i < data.length; i++) {
+      const rowMs = parseUtcMs(data[i].fullTs);
+      if (rowMs == null) continue;
+      const diff = Math.abs(rowMs - targetMs);
       if (diff < bestDiff) { best = i; bestDiff = diff; }
     }
-    return data[best]._idx;
+    return best == null ? null : data[best]._idx;
   }, []);
 
   const downtimeBands = useMemo(() => {
     if (!sensorData?.downtime_bands?.length || !chartData.length) return [];
-    const dayFilter = selectedDay || '';
+    const chartStartMs = parseUtcMs(chartData[0]?.fullTs);
+    const chartEndMs = parseUtcMs(chartData[chartData.length - 1]?.fullTs);
+    if (chartStartMs == null || chartEndMs == null) return [];
     return sensorData.downtime_bands
-      .filter((b) => {
-        if (!dayFilter) return true;
-        return String(b.start).substring(0, 10) === dayFilter;
+      .map((b) => {
+        const rawStartMs = parseUtcMs(b.start);
+        const rawEndMs = parseUtcMs(b.end ?? b.start);
+        if (rawStartMs == null || rawEndMs == null) return null;
+        const minMs = Math.min(rawStartMs, rawEndMs);
+        const maxMs = Math.max(rawStartMs, rawEndMs);
+        if (maxMs < chartStartMs || minMs > chartEndMs) return null;
+        const clippedStartMs = Math.max(minMs, chartStartMs);
+        const clippedEndMs = Math.min(maxMs, chartEndMs);
+        const start = findClosestIdx(clippedStartMs, chartData);
+        const end = findClosestIdx(clippedEndMs, chartData);
+        if (start == null || end == null) return null;
+        if (start === end) return { start: start - 0.45, end: end + 0.45 };
+        return { start: Math.min(start, end), end: Math.max(start, end) };
       })
-      .map((b) => ({ start: findClosestIdx(b.start, chartData), end: findClosestIdx(b.end, chartData) }))
+      .filter(Boolean)
       .filter((b) => b.start !== null && b.end !== null);
-  }, [sensorData, chartData, selectedDay, findClosestIdx]);
+  }, [sensorData, chartData, findClosestIdx]);
 
   const alarmBands = useMemo(() => {
     if (!alerts?.length || !chartData.length || !selectedSystem) return [];
     const sysAlerts = alerts.filter((a) => a.class === selectedSystem);
     if (!sysAlerts.length) return [];
-    const dayFilter = selectedDay || '';
+    const chartStartMs = parseUtcMs(chartData[0]?.fullTs);
+    const chartEndMs = parseUtcMs(chartData[chartData.length - 1]?.fullTs);
+    if (chartStartMs == null || chartEndMs == null) return [];
     return sysAlerts
-      .filter((a) => {
-        if (!dayFilter) return true;
-        const aStart = String(a.start_ts || '').substring(0, 10);
-        const aEnd = String(a.end_ts || '').substring(0, 10);
-        return aStart === dayFilter || aEnd === dayFilter;
-      })
-      .map((a) => ({
-        start: findClosestIdx(a.start_ts, chartData),
-        end: findClosestIdx(a.end_ts, chartData),
-        severity: a.severity || 'MEDIUM',
-        minute_count: a.minute_count || 1,
-        severity_mix: a.severity_mix || '',
-        high_count: a.high_count || 0,
-        medium_count: a.medium_count || 0,
-        low_count: a.low_count || 0,
-        view_type: a.view_type || alarmView,
-        rawStart: a.start_ts,
-        rawEnd: a.end_ts,
-      }))
-      .filter((b) => b.start !== null && b.end !== null)
       .map((b) => {
-        if (b.start === b.end) {
-          return { ...b, start: b.start - 0.45, end: b.end + 0.45 };
+        const rawStartMs = parseUtcMs(b.start_ts || b.event_start);
+        const rawEndMs = parseUtcMs(b.end_ts || b.event_end || b.start_ts || b.event_start);
+        if (rawStartMs == null || rawEndMs == null) return null;
+        const minMs = Math.min(rawStartMs, rawEndMs);
+        const maxMs = Math.max(rawStartMs, rawEndMs);
+        if (maxMs < chartStartMs || minMs > chartEndMs) return null;
+        const clippedStartMs = Math.max(minMs, chartStartMs);
+        const clippedEndMs = Math.min(maxMs, chartEndMs);
+        const start = findClosestIdx(clippedStartMs, chartData);
+        const end = findClosestIdx(clippedEndMs, chartData);
+        if (start == null || end == null) return null;
+        const band = {
+          start: Math.min(start, end),
+          end: Math.max(start, end),
+          severity: b.severity || 'MEDIUM',
+          minute_count: b.minute_count || 1,
+          severity_mix: b.severity_mix || '',
+          high_count: b.high_count || 0,
+          medium_count: b.medium_count || 0,
+          low_count: b.low_count || 0,
+          view_type: b.view_type || 'span',
+          rawStart: b.start_ts || b.event_start,
+          rawEnd: b.end_ts || b.event_end || b.start_ts || b.event_start,
+        };
+        if (band.start === band.end) {
+          return { ...band, start: band.start - 0.45, end: band.end + 0.45 };
         }
-        return b;
-      });
-  }, [alerts, chartData, selectedDay, selectedSystem, alarmView, findClosestIdx]);
+        return band;
+      })
+      .filter(Boolean);
+  }, [alerts, chartData, selectedSystem, findClosestIdx]);
 
   const sensors = sensorData?.sensors || [];
-  const hasHighAlarms = alarmBands.some((band) => band.severity === 'HIGH');
-  const hasMediumAlarms = alarmBands.some((band) => band.severity === 'MEDIUM');
-  const hasLowAlarms = alarmBands.some((band) => band.severity === 'LOW');
-  const hasMixedAlarms = alarmBands.some((band) => band.severity === 'MIXED');
+  const hasHighAlarms = alarmBands.some((band) => band && band.severity === 'HIGH');
+  const hasMediumAlarms = alarmBands.some((band) => band && band.severity === 'MEDIUM');
+  const hasLowAlarms = alarmBands.some((band) => band && band.severity === 'LOW');
+  const hasMixedAlarms = alarmBands.some((band) => band && band.severity === 'MIXED');
 
   const handleChartClick = useCallback((e) => {
     if (isDraggingRef.current) { isDraggingRef.current = false; return; }
     if (!e || !e.activePayload || !e.activePayload.length || !onSelectAlert || !alerts?.length) return;
     const idx = e.activePayload[0]?.payload?._idx;
     if (idx == null) return;
-    const band = alarmBands.find((candidate) => idx >= candidate.start && idx <= candidate.end);
+    const band = alarmBands.find((candidate) => candidate && idx >= candidate.start && idx <= candidate.end);
     if (!band) return;
 
     const match = alerts.find((alert) => {
@@ -419,13 +388,13 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
     }
 
     const row = e.activePayload[0]?.payload;
-    const pointTs = row?.fullTs ? new Date(String(row.fullTs)).getTime() : null;
-    if (pointTs == null || Number.isNaN(pointTs)) return;
+    const pointTs = parseUtcMs(row?.fullTs);
+    if (pointTs == null) return;
     const overlapMatch = alerts.find((alert) => {
       if (alert.class !== selectedSystem) return false;
-      const start = new Date(String(alert.start_ts)).getTime();
-      const end = new Date(String(alert.end_ts)).getTime();
-      return !Number.isNaN(start) && !Number.isNaN(end) && start <= pointTs && pointTs <= end;
+      const start = parseUtcMs(alert.start_ts || alert.event_start);
+      const end = parseUtcMs(alert.end_ts || alert.event_end || alert.start_ts || alert.event_start);
+      return start != null && end != null && start <= pointTs && pointTs <= end;
     });
     if (overlapMatch) onSelectAlert(overlapMatch);
   }, [alarmBands, alerts, onSelectAlert, selectedSystem]);
@@ -504,10 +473,7 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
     <GlassCard delay={0.5} style={{ marginTop: '8px' }} intensity="strong">
       <div style={styles.heading}>
         Subsystem Behavior
-        <InfoTooltip text={alarmView === 'span'
-          ? 'Live sensor traces for each subsystem. Gray bands indicate downtime. Colored overlays indicate dynamic contiguous alarm spans built from source minute-level alarms.'
-          : 'Live sensor traces for each subsystem. Gray bands indicate downtime. Colored markers indicate source minute-level system alarms.'} />
-        {filterLabel && <span style={{ ...filterBadgeStyle, cursor: 'pointer' }} onClick={onFilterClick}>{filterLabel}</span>}
+        <InfoTooltip text="Live sensor traces for each subsystem. Gray bands indicate downtime. Colored overlays indicate dynamic contiguous anomaly spans built from source minute-level anomalies." />
       </div>
 
       <div style={styles.tabRow}>
@@ -522,20 +488,6 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
         })}
       </div>
 
-      <div style={{ ...styles.controlContainer, display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-        <div style={controlPillStyle(alarmView === 'minute')} onClick={() => setAlarmView('minute')}>
-          Minute Windows
-        </div>
-        <div style={controlPillStyle(alarmView === 'span')} onClick={() => setAlarmView('span')}>
-          Alarm Spans
-        </div>
-        <div style={{ marginLeft: 'auto' }}>
-          <div style={controlPillStyle(showContributions, '#7B1FA2')} onClick={() => setShowContributions((v) => !v)}>
-            {contribLoading ? 'Loading...' : 'Sensor Contributions'}
-          </div>
-        </div>
-      </div>
-
       <div style={{ ...styles.chartContainer, position: 'relative' }}>
         {alertsLoading && !loading && (
           <div style={{
@@ -545,7 +497,7 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
             zIndex: 10, borderRadius: '8px',
             color: '#C8D6C0', fontSize: '13px', fontWeight: 500, letterSpacing: '0.3px',
           }}>
-            Updating alarm overlays...
+            Updating anomaly overlays...
           </div>
         )}
         {loading ? (
@@ -582,19 +534,19 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
               {hasHighAlarms && (
                 <div style={{ ...styles.legendItem, cursor: 'default' }}>
                   <div style={{ width: '14px', height: '8px', background: getAlarmStyle('HIGH').swatchBg, borderRadius: '2px', border: getAlarmStyle('HIGH').swatchBorder }} />
-                  <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'High Span' : 'High Alarm'}</span>
+                  <span style={{ fontWeight: 600 }}>High Span</span>
                 </div>
               )}
               {hasMediumAlarms && (
                 <div style={{ ...styles.legendItem, cursor: 'default' }}>
                   <div style={{ width: '14px', height: '8px', background: getAlarmStyle('MEDIUM').swatchBg, borderRadius: '2px', border: getAlarmStyle('MEDIUM').swatchBorder }} />
-                  <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'Medium Span' : 'Medium Alarm'}</span>
+                  <span style={{ fontWeight: 600 }}>Medium Span</span>
                 </div>
               )}
               {hasLowAlarms && (
                 <div style={{ ...styles.legendItem, cursor: 'default' }}>
                   <div style={{ width: '14px', height: '8px', background: getAlarmStyle('LOW').swatchBg, borderRadius: '2px', border: getAlarmStyle('LOW').swatchBorder }} />
-                  <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'Low Span' : 'Low Alarm'}</span>
+                  <span style={{ fontWeight: 600 }}>Low Span</span>
                 </div>
               )}
               {hasMixedAlarms && (
@@ -606,30 +558,9 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
             </div>
             </div>
 
-            <div style={{ ...styles.controlContainer, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <div style={{
-                display: 'inline-flex', alignItems: 'center', gap: '4px',
-                fontSize: '10px', padding: '4px 12px', borderRadius: '20px',
-                border: '1px solid rgba(203,230,200,0.6)', background: 'rgba(255,255,255,0.6)',
-                color: '#8A928A', fontWeight: 500,
-              }}>
-                Drag to zoom
-              </div>
-              {isZoomed && onZoomReset && (
-                <div onClick={onZoomReset} style={{
-                  display: 'inline-flex', alignItems: 'center', gap: '6px',
-                  fontSize: '10px', padding: '4px 12px', borderRadius: '20px', cursor: 'pointer',
-                  border: '1.5px solid rgba(27,94,32,0.4)', background: 'rgba(27,94,32,0.06)',
-                  color: '#1B5E20', fontWeight: 600, transition: 'all 0.2s',
-                }}>
-                  <span>Reset zoom</span>
-                  <span style={{ fontSize: '12px', opacity: 0.6 }}>x</span>
-                </div>
-              )}
-            </div>
-            <ResponsiveContainer width="100%" height={showContributions ? 400 : 340}>
+            <ResponsiveContainer width="100%" height={340}>
               <ComposedChart
-                data={mergedChartData}
+                data={chartData}
                 margin={{ top: 10, right: 20, bottom: 5, left: 0 }}
                 style={{ cursor: 'crosshair' }}
                 onMouseDown={handleZoomMouseDown}
@@ -643,30 +574,13 @@ function SubsystemBehaviorChartBeta({ filterLabel, onFilterClick, selectedDay, i
                   ticks={xTicks} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false}
                   label={{ value: 'UTC', position: 'insideBottomRight', offset: -2, style: { fontSize: 9, fill: '#8A928A' } }}
                   tickFormatter={(idx) => {
-                    const row = mergedChartData.find((r) => r._idx === idx) || mergedChartData[idx];
+                    const row = chartData.find((r) => r._idx === idx) || chartData[idx];
                     if (!row) return '';
                     return row.ts;
                   }}
                 />
                 <YAxis domain={yDomain} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false} />
                 <Tooltip content={<CustomTooltip downtimeBands={downtimeBands} alarmBands={alarmBands} alarmView={alarmView} />} />
-
-                {/* Stacked sensor contribution areas */}
-                {showContributions && contribSensors.map((s, i) => (
-                  <Area
-                    key={`contrib-${s}`}
-                    type="monotone"
-                    dataKey={`_contrib_${s}`}
-                    stackId="contrib"
-                    fill={SENSOR_PALETTE[i % SENSOR_PALETTE.length]}
-                    stroke="none"
-                    fillOpacity={0.45}
-                    name={`${formatSensorName(s)} contrib`}
-                    animationDuration={400}
-                    connectNulls={false}
-                    isAnimationActive={false}
-                  />
-                ))}
 
                 {/* Downtime bands - prominent solid gray */}
                 {downtimeBands.map((band, i) => (

@@ -21,7 +21,7 @@ import {
 } from 'recharts';
 import GlassCard from './GlassCard';
 import InfoTooltip from './InfoTooltip';
-import { getBetaAlerts, getBetaSensorQuality, getBetaRadarFingerprints, getBetaSensorQualityWindow, getBetaSensorContributions } from '../utils/api';
+import { getBetaAlerts, getBetaSensorQuality, getBetaSensorQualityWindow, getBetaSensorContributions } from '../utils/api';
 import { formatSensorName, systemColor } from '../utils/formatters';
 
 const SENSOR_PALETTE = [
@@ -84,13 +84,6 @@ const styles = {
     background: active ? 'rgba(27,94,32,0.08)' : 'transparent',
     color: active ? '#1B5E20' : '#8A928A', transition: 'all 0.2s',
   }),
-};
-
-const filterBadgeStyle = {
-  fontSize: '12px', fontWeight: 600, color: '#1B5E20',
-  background: 'rgba(129,199,132,0.15)', border: '1px solid rgba(129,199,132,0.3)',
-  borderRadius: '8px', padding: '5px 14px', marginLeft: 'auto',
-  whiteSpace: 'nowrap', letterSpacing: '0.02em', textTransform: 'none',
 };
 
 const controlPillStyle = (active, accent = '#1B5E20') => ({
@@ -158,6 +151,15 @@ const buildAlarmSummary = (alarm) => {
   return mix ? `${minuteCount} alerts - ${mix}` : `${minuteCount} alerts`;
 };
 
+const parseUtcMs = (value) => {
+  if (value == null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const ms = Date.parse(normalized);
+  return Number.isNaN(ms) ? null : ms;
+};
+
 const CustomTooltip = ({ active, payload, downtimeBands, alarmBands, alarmView }) => {
   if (!active || !payload || !payload.length) return null;
   const row = payload[0]?.payload;
@@ -180,8 +182,8 @@ const CustomTooltip = ({ active, payload, downtimeBands, alarmBands, alarmView }
     const alarmStyle = getAlarmStyle(matchedAlarm.severity);
     zoneLabels.push({
       text: alarmView === 'span'
-        ? `Alarm Span - ${matchedAlarm.severity}`
-        : `System Alarm - ${matchedAlarm.severity}`,
+        ? `Anomaly Span - ${matchedAlarm.severity}`
+        : `System Anomaly - ${matchedAlarm.severity}`,
       color: alarmStyle.text,
       bg: alarmStyle.bg,
       border: alarmStyle.border,
@@ -268,7 +270,7 @@ const RadarTooltipContent = ({ active, payload }) => {
   );
 };
 
-/* ─── Peak Alarm Detail Modal ─── */
+/* ─── Peak Anomaly Detail Modal ─── */
 function PeakAlarmDetailModal({ fingerprint, onClose }) {
   if (!fingerprint) return null;
   const fp = fingerprint;
@@ -277,8 +279,6 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
   const [chartLoading, setChartLoading] = useState(true);
   const [qualityData, setQualityData] = useState(null);
   const [alerts, setAlerts] = useState([]);
-  const [modalViewMode, setModalViewMode] = useState('subsystem');
-  const [modalMetric, setModalMetric] = useState('a');
   const [visibleSensors, setVisibleSensors] = useState({});
 
   useEffect(() => {
@@ -294,7 +294,7 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
       winEnd = new Date(evEnd.getTime() + pad).toISOString();
     }
     Promise.all([
-      getBetaSensorQualityWindow(fp.system_id, winStart, winEnd, 1),
+      getBetaSensorQualityWindow(fp.system_id, winStart, winEnd),
       getBetaAlerts({ alarm_view: 'subsystem' }).catch(() => ({ data: { alerts: [] } })),
     ]).then(([qRes, aRes]) => {
       if (cancelled) return;
@@ -318,33 +318,18 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
     }));
   }, [qualityData]);
 
-  const sensorChartData = useMemo(() => {
-    if (!qualityData?.timeseries?.length) return [];
-    const allSensors = qualityData.sensors || [];
-    return qualityData.timeseries.map((row, i) => {
-      const sqsVals = allSensors.map((s) => {
-        const v = row[`${s}__sqs`];
-        return (v != null && isFinite(v)) ? v : 0;
-      });
-      const avgSqsPct = sqsVals.length ? (sqsVals.reduce((a, b) => a + b, 0) / sqsVals.length) * 100 : null;
-      return {
-        ...row, _idx: i, _avgSqsPct: avgSqsPct,
-        fullTs: row.ts ? String(row.ts) : '',
-        ts: row.ts ? String(row.ts).substring(11, 16) : '',
-      };
-    });
-  }, [qualityData]);
-
-  const chartData = modalViewMode === 'subsystem' ? subsystemChartData : sensorChartData;
+  const chartData = subsystemChartData;
 
   const eventSlice = useMemo(() => {
     if (!chartData.length || !fp.event_start || !fp.event_end) return [];
-    const evStart = new Date(fp.event_start).getTime();
-    const evEnd = new Date(fp.event_end).getTime();
+    const evStart = parseUtcMs(fp.event_start);
+    const evEnd = parseUtcMs(fp.event_end);
+    if (evStart == null || evEnd == null) return [];
     const pad = (evEnd - evStart) * 1.5 || 30 * 60 * 1000;
     return chartData.filter((row) => {
       if (!row.fullTs) return false;
-      const t = new Date(row.fullTs).getTime();
+      const t = parseUtcMs(row.fullTs);
+      if (t == null) return false;
       return t >= evStart - pad && t <= evEnd + pad;
     });
   }, [chartData, fp.event_start, fp.event_end]);
@@ -352,18 +337,33 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
   const eventAlarmBands = useMemo(() => {
     if (!alerts.length || !eventSlice.length) return [];
     const sysAlerts = alerts.filter((a) => a.class === fp.system_id);
+    const chartStartMs = parseUtcMs(eventSlice[0]?.fullTs);
+    const chartEndMs = parseUtcMs(eventSlice[eventSlice.length - 1]?.fullTs);
+    if (chartStartMs == null || chartEndMs == null) return [];
     const bands = [];
     for (const a of sysAlerts) {
-      const aStart = new Date(a.start_ts || a.event_start).getTime();
-      const aEnd = new Date(a.end_ts || a.event_end).getTime();
-      let startIdx = null, endIdx = null;
+      const rawStartMs = parseUtcMs(a.start_ts || a.event_start);
+      const rawEndMs = parseUtcMs(a.end_ts || a.event_end || a.start_ts || a.event_start);
+      if (rawStartMs == null || rawEndMs == null) continue;
+      const minMs = Math.min(rawStartMs, rawEndMs);
+      const maxMs = Math.max(rawStartMs, rawEndMs);
+      if (maxMs < chartStartMs || minMs > chartEndMs) continue;
+      const clippedStartMs = Math.max(minMs, chartStartMs);
+      const clippedEndMs = Math.min(maxMs, chartEndMs);
+      let startIdx = null;
+      let endIdx = null;
       for (const row of eventSlice) {
-        const t = new Date(row.fullTs).getTime();
-        if (t >= aStart && startIdx === null) startIdx = row._idx;
-        if (t <= aEnd) endIdx = row._idx;
+        const t = parseUtcMs(row.fullTs);
+        if (t == null) continue;
+        if (t >= clippedStartMs && startIdx === null) startIdx = row._idx;
+        if (t <= clippedEndMs) endIdx = row._idx;
       }
       if (startIdx != null && endIdx != null) {
-        bands.push({ start: startIdx, end: endIdx, severity: a.severity || 'MEDIUM' });
+        if (startIdx === endIdx) {
+          bands.push({ start: startIdx - 0.45, end: endIdx + 0.45, severity: a.severity || 'MEDIUM' });
+        } else {
+          bands.push({ start: Math.min(startIdx, endIdx), end: Math.max(startIdx, endIdx), severity: a.severity || 'MEDIUM' });
+        }
       }
     }
     return bands;
@@ -372,27 +372,17 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
   const eventYDomain = useMemo(() => {
     if (!eventSlice.length) return ['auto', 'auto'];
     let min = Infinity, max = -Infinity;
-    if (modalViewMode === 'sensor' && sensors.length) {
-      for (const row of eventSlice) {
-        for (const s of sensors) {
-          if (!visibleSensors[s]) continue;
-          const v = row[`${s}__${modalMetric}`];
-          if (v != null && isFinite(v)) { if (v < min) min = v; if (v > max) max = v; }
-        }
-      }
-    } else {
-      for (const row of eventSlice) {
-        for (const key of ['system_score', 'adaptive_threshold']) {
-          const v = row[key];
-          if (v != null && isFinite(v)) { if (v < min) min = v; if (v > max) max = v; }
-        }
+    for (const row of eventSlice) {
+      for (const key of ['system_score', 'adaptive_threshold']) {
+        const v = row[key];
+        if (v != null && isFinite(v)) { if (v < min) min = v; if (v > max) max = v; }
       }
     }
     if (!isFinite(min) || !isFinite(max)) return ['auto', 'auto'];
     const range = max - min;
     const p = range > 0 ? range * 0.1 : 0.1;
     return [Math.max(0, Math.floor((min - p) * 100) / 100), Math.ceil((max + p) * 100) / 100];
-  }, [eventSlice, modalViewMode, sensors, visibleSensors, modalMetric]);
+  }, [eventSlice]);
 
   const radarData = fp.sensors.map((s) => ({
     sensor: s.sensor,
@@ -408,8 +398,8 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
   const maxVal = Math.max(...radarData.map((d) => d.fault), baselineVal, 0.5);
 
   const subtitle = fp.has_alarm && fp.event_start
-    ? `Peak risk=${fp.peak_risk.toFixed(3)}  |  Event: ${fp.event_start.substring(0, 16)} to ${fp.event_end.substring(0, 16)}`
-    : 'No alarms detected -- showing latest AE contributions';
+    ? `Event: ${fp.event_start.substring(0, 16)} to ${fp.event_end.substring(0, 16)}`
+    : 'No anomalies detected';
 
   return ReactDOM.createPortal(
     <AnimatePresence>
@@ -442,7 +432,7 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
             <div>
               <div style={{ fontSize: '20px', fontWeight: 600, color: '#1B5E20', letterSpacing: '-0.02em' }}>
-                Fault Fingerprint -- {fp.system_id}
+                Fault Fingerprint - {fp.system_id}
               </div>
               <div style={{ fontSize: '11px', color: '#8A928A', marginTop: '4px' }}>{subtitle}</div>
             </div>
@@ -466,16 +456,6 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
                 color: '#D32F2F', letterSpacing: '0.04em',
               }}>PEAK RISK: {fp.peak_risk.toFixed(4)}</span>
             )}
-            <span style={{
-              fontSize: '10px', fontWeight: 600, padding: '3px 10px', borderRadius: '8px',
-              background: 'rgba(27,94,32,0.06)', border: '1px solid rgba(27,94,32,0.15)', color: '#1B5E20',
-            }}>{fp.sensor_count} sensors</span>
-            {fp.alarm_count > 0 && (
-              <span style={{
-                fontSize: '10px', fontWeight: 600, padding: '3px 10px', borderRadius: '8px',
-                background: 'rgba(230,81,0,0.08)', border: '1px solid rgba(230,81,0,0.2)', color: '#E65100',
-              }}>{fp.alarm_count} alarm event{fp.alarm_count > 1 ? 's' : ''}</span>
-            )}
           </div>
 
           {/* Event Window Chart */}
@@ -485,43 +465,11 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
             </div>
           ) : eventSlice.length > 0 && (
             <div style={{ marginBottom: '16px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <div style={{ fontSize: '10px', fontWeight: 700, color: '#8A928A', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                    Event Window
-                  </div>
-                  {fp.system_id !== 'ISOLATED' && (
-                    <div style={{ display: 'flex', gap: '3px' }}>
-                      {['subsystem', 'sensor'].map((v) => (
-                        <div key={v} onClick={() => setModalViewMode(v)} style={{
-                          padding: '2px 10px', borderRadius: '10px', fontSize: '9px', fontWeight: modalViewMode === v ? 600 : 400,
-                          cursor: 'pointer', border: modalViewMode === v ? '1.5px solid #1B5E20' : '1px solid rgba(203,230,200,0.4)',
-                          background: modalViewMode === v ? 'rgba(27,94,32,0.08)' : 'transparent',
-                          color: modalViewMode === v ? '#1B5E20' : '#8A928A',
-                        }}>
-                          {v === 'subsystem' ? 'System Score' : 'Sensor Breakdown'}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                {modalViewMode === 'sensor' && (
-                  <div style={{ display: 'flex', gap: '4px' }}>
-                    {METRIC_SUFFIXES.map(m => (
-                      <div key={m.key} style={{
-                        padding: '2px 10px', borderRadius: '10px', fontSize: '10px', fontWeight: modalMetric === m.key ? 600 : 400,
-                        cursor: 'pointer', border: modalMetric === m.key ? `1.5px solid ${m.color}` : '1px solid rgba(203,230,200,0.4)',
-                        background: modalMetric === m.key ? `${m.color}14` : 'transparent',
-                        color: modalMetric === m.key ? m.color : '#8A928A',
-                      }} onClick={() => setModalMetric(m.key)}>
-                        {m.label}
-                      </div>
-                    ))}
-                  </div>
-                )}
+              <div style={{ fontSize: '10px', fontWeight: 700, color: '#8A928A', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>
+                Event Window
               </div>
               <ResponsiveContainer width="100%" height={180}>
-                <LineChart data={eventSlice} margin={{ top: 5, right: modalViewMode === 'sensor' ? 50 : 12, bottom: 5, left: 0 }}>
+                <LineChart data={eventSlice} margin={{ top: 5, right: 12, bottom: 5, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,230,200,0.4)" />
                   <XAxis
                     dataKey="_idx" type="number" domain={['dataMin', 'dataMax']}
@@ -532,9 +480,6 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
                     }}
                   />
                   <YAxis yAxisId="left" domain={eventYDomain} tick={{ fontSize: 9, fill: '#8A928A' }} tickLine={false} />
-                  {modalViewMode === 'sensor' && (
-                    <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tick={{ fontSize: 8, fill: SQS_COLOR }} tickLine={false} tickFormatter={(v) => `${v}%`} />
-                  )}
                   <Tooltip
                     content={({ active, payload }) => {
                       if (!active || !payload?.length) return null;
@@ -572,31 +517,8 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
                       />
                     );
                   })}
-                  {modalViewMode === 'sensor' ? (
-                    <>
-                      <Line yAxisId="right" type="monotone" dataKey="_avgSqsPct" stroke={SQS_COLOR} strokeWidth={2} dot={false} name="Avg SQS %" connectNulls />
-                      {sensors.map((s, i) =>
-                        visibleSensors[s] ? (
-                          <Line
-                            key={s}
-                            yAxisId="left"
-                            type="monotone"
-                            dataKey={`${s}__${modalMetric}`}
-                            stroke={SENSOR_PALETTE[i % SENSOR_PALETTE.length]}
-                            strokeWidth={1.5}
-                            dot={false}
-                            name={formatSensorName(s)}
-                            connectNulls={false}
-                          />
-                        ) : null
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      <Line yAxisId="left" type="monotone" dataKey="system_score" stroke="#1B5E20" strokeWidth={2} dot={false} name="System Score" />
-                      <Line yAxisId="left" type="monotone" dataKey="adaptive_threshold" stroke="#E65100" strokeWidth={1.5} strokeDasharray="6 3" dot={false} name="Adaptive Threshold" />
-                    </>
-                  )}
+                  <Line yAxisId="left" type="monotone" dataKey="system_score" stroke="#1B5E20" strokeWidth={2} dot={false} name="System Score" />
+                  <Line yAxisId="left" type="monotone" dataKey="adaptive_threshold" stroke="#E65100" strokeWidth={1.5} strokeDasharray="6 3" dot={false} name="Adaptive Threshold" />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -618,60 +540,6 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
             </RadarChart>
           </ResponsiveContainer>
 
-          {/* Top contributor */}
-          {topSensor && (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: '10px',
-              padding: '10px 14px', borderRadius: '10px', marginTop: '8px',
-              background: 'rgba(239,83,80,0.04)', border: '1px solid rgba(239,83,80,0.15)',
-            }}>
-              <div>
-                <div style={{ fontSize: '9.5px', fontWeight: 600, color: '#8A928A', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Top Contributor</div>
-                <div style={{ fontSize: '13px', fontWeight: 700, color: '#2c3e50' }}>{formatSensorName(topSensor.sensor)}</div>
-                <div style={{ fontSize: '10px', color: '#8A928A' }}>
-                  Value: {topSensor.fault.toFixed(4)}
-                  {topSensor.sqs != null && ` | SQS: ${topSensor.sqs.toFixed(2)}`}
-                  {topSensor.trust && ` | ${topSensor.trust}`}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Sensor table */}
-          <div style={{ marginTop: '14px' }}>
-            <div style={{ fontSize: '10px', fontWeight: 700, color: '#8A928A', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>
-              Sensor Detail ({sortedSensors.length})
-            </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
-              <thead>
-                <tr>
-                  <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, color: '#8A928A', fontSize: '9.5px', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid rgba(203,230,200,0.3)' }}>Sensor</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 600, color: '#8A928A', fontSize: '9.5px', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid rgba(203,230,200,0.3)' }}>Value</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 600, color: '#8A928A', fontSize: '9.5px', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid rgba(203,230,200,0.3)' }}>SQS</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'center', fontWeight: 600, color: '#8A928A', fontSize: '9.5px', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid rgba(203,230,200,0.3)' }}>Trust</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedSensors.map((s) => (
-                  <tr key={s.sensor}>
-                    <td style={{ padding: '5px 8px', borderBottom: '1px solid rgba(203,230,200,0.15)', color: '#2c3e50' }}>{formatSensorName(s.sensor)}</td>
-                    <td style={{ padding: '5px 8px', borderBottom: '1px solid rgba(203,230,200,0.15)', color: '#2c3e50', textAlign: 'right', fontWeight: 600 }}>{s.fault.toFixed(4)}</td>
-                    <td style={{ padding: '5px 8px', borderBottom: '1px solid rgba(203,230,200,0.15)', color: '#2c3e50', textAlign: 'right' }}>{s.sqs != null ? s.sqs.toFixed(2) : '--'}</td>
-                    <td style={{ padding: '5px 8px', borderBottom: '1px solid rgba(203,230,200,0.15)', color: '#2c3e50', textAlign: 'center' }}>
-                      {s.trust ? (
-                        <span style={{
-                          fontSize: '9px', fontWeight: 600, padding: '2px 6px', borderRadius: '8px',
-                          display: 'inline-block',
-                          backgroundColor: s.trust === 'Reliable' ? 'rgba(27,94,32,0.08)' : 'rgba(231,76,60,0.08)',
-                          color: s.trust === 'Reliable' ? '#1B5E20' : '#c0392b',
-                        }}>{s.trust}</span>
-                      ) : '--'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
         </motion.div>
       </motion.div>
     </AnimatePresence>,
@@ -679,8 +547,8 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
   );
 }
 
-function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selectedDay, isLatestMode, lastNHours, startTime, endTime, onZoomChange, onZoomReset, isZoomed, subsystems: subsystemsProp }) {
-  const [alarmView, setAlarmView] = useState('minute');
+function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHours, startTime, endTime, onZoomChange, onZoomReset, isZoomed, subsystems: subsystemsProp, fingerprints: fingerprintsProp }) {
+  const alarmView = 'span';
   const subsystems = subsystemsProp || [];
   const [selectedSystem, setSelectedSystem] = useState(null);
   const [qualityData, setQualityData] = useState(null);
@@ -694,7 +562,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
   const [showContributions, setShowContributions] = useState(false);
   const [contribData, setContribData] = useState(null);
   const [contribLoading, setContribLoading] = useState(false);
-  const [fingerprints, setFingerprints] = useState([]);
+  const fingerprints = fingerprintsProp || [];
   const [peakModalOpen, setPeakModalOpen] = useState(false);
 
   const [refAreaLeft, setRefAreaLeft] = useState(null);
@@ -713,14 +581,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
     if (selectedSystem === 'ISOLATED' && viewMode === 'subsystem') setViewMode('sensor');
   }, [selectedSystem, viewMode]);
 
-  // Fetch radar fingerprints (for peak event indicator + modal)
-  useEffect(() => {
-    let cancelled = false;
-    getBetaRadarFingerprints()
-      .then((res) => { if (!cancelled) setFingerprints(res.data.fingerprints || []); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
+  // Fingerprints received via prop from DashboardBeta (single fetch)
 
   // Active fingerprint for selected system
   const activeFp = useMemo(() => {
@@ -741,7 +602,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
     }
     setLoading(true);
     try {
-      const res = await getBetaSensorQuality(systemId, 1);
+      const res = await getBetaSensorQuality(systemId);
       qualityCacheRef.current[systemId] = res.data;
       setQualityData(res.data);
       const vis = {};
@@ -760,9 +621,10 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
 
   useEffect(() => {
     if (!showAlarms) return;
+    if (!selectedSystem) return;
     let cancelled = false;
     setAlertsLoading(true);
-    getBetaAlerts({ alarm_view: alarmView })
+    getBetaAlerts({ alarm_view: 'span', class: selectedSystem })
       .then((res) => {
         if (!cancelled) setAlerts(res.data.alerts || []);
       })
@@ -773,7 +635,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
         if (!cancelled) setAlertsLoading(false);
       });
     return () => { cancelled = true; };
-  }, [alarmView, showAlarms]);
+  }, [showAlarms, selectedSystem]);
 
   // Fetch sensor contributions when toggle is on
   useEffect(() => {
@@ -783,7 +645,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
       return;
     }
     setContribLoading(true);
-    getBetaSensorContributions(selectedSystem, 1)
+    getBetaSensorContributions(selectedSystem)
       .then((res) => {
         contribCacheRef.current[selectedSystem] = res.data;
         setContribData(res.data);
@@ -810,10 +672,13 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
     });
     if (isLatestMode && lastNHours < 24 && filtered.length > 0) {
       const lastTs = filtered[filtered.length - 1][tsKey];
-      if (lastTs) {
-        const end = new Date(String(lastTs));
-        const start = new Date(end.getTime() - lastNHours * 60 * 60 * 1000);
-        filtered = filtered.filter((row) => new Date(String(row[tsKey])) >= start);
+      const endMs = parseUtcMs(lastTs);
+      if (endMs != null) {
+        const startMs = endMs - lastNHours * 60 * 60 * 1000;
+        filtered = filtered.filter((row) => {
+          const rowMs = parseUtcMs(row[tsKey]);
+          return rowMs != null && rowMs >= startMs;
+        });
       }
     } else if (!isLatestMode) {
       filtered = filtered.filter((row) => {
@@ -883,67 +748,89 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
     });
   }, [chartData, contribData, contribSensors, showContributions, viewMode]);
 
-  const findClosestIdx = useCallback((targetTs, rows) => {
+  const findClosestIdx = useCallback((targetMs, rows) => {
     if (!rows.length) return null;
-    const target = new Date(targetTs).getTime();
-    let best = 0;
-    let bestDiff = Math.abs(new Date(rows[0].fullTs).getTime() - target);
-    for (let i = 1; i < rows.length; i++) {
-      const diff = Math.abs(new Date(rows[i].fullTs).getTime() - target);
+    if (targetMs == null || Number.isNaN(targetMs)) return null;
+    let best = null;
+    let bestDiff = Infinity;
+    for (let i = 0; i < rows.length; i++) {
+      const rowMs = parseUtcMs(rows[i].fullTs);
+      if (rowMs == null) continue;
+      const diff = Math.abs(rowMs - targetMs);
       if (diff < bestDiff) {
         best = i;
         bestDiff = diff;
       }
     }
-    return rows[best]._idx;
+    return best == null ? null : rows[best]._idx;
   }, []);
 
   // Downtime bands from API
   const downtimeBands = useMemo(() => {
     if (!qualityData?.downtime_bands?.length || !chartData.length) return [];
-    const dayFilter = selectedDay || '';
+    const chartStartMs = parseUtcMs(chartData[0]?.fullTs);
+    const chartEndMs = parseUtcMs(chartData[chartData.length - 1]?.fullTs);
+    if (chartStartMs == null || chartEndMs == null) return [];
     return qualityData.downtime_bands
-      .filter((b) => {
-        if (!dayFilter) return true;
-        return String(b.start).substring(0, 10) === dayFilter;
+      .map((b) => {
+        const rawStartMs = parseUtcMs(b.start);
+        const rawEndMs = parseUtcMs(b.end ?? b.start);
+        if (rawStartMs == null || rawEndMs == null) return null;
+        const minMs = Math.min(rawStartMs, rawEndMs);
+        const maxMs = Math.max(rawStartMs, rawEndMs);
+        if (maxMs < chartStartMs || minMs > chartEndMs) return null;
+        const clippedStartMs = Math.max(minMs, chartStartMs);
+        const clippedEndMs = Math.min(maxMs, chartEndMs);
+        const start = findClosestIdx(clippedStartMs, chartData);
+        const end = findClosestIdx(clippedEndMs, chartData);
+        if (start == null || end == null) return null;
+        if (start === end) return { start: start - 0.45, end: end + 0.45 };
+        return { start: Math.min(start, end), end: Math.max(start, end) };
       })
-      .map((b) => ({ start: findClosestIdx(b.start, chartData), end: findClosestIdx(b.end, chartData) }))
+      .filter(Boolean)
       .filter((b) => b.start !== null && b.end !== null);
-  }, [qualityData, chartData, selectedDay, findClosestIdx]);
+  }, [qualityData, chartData, findClosestIdx]);
 
   const alarmBands = useMemo(() => {
     if (!alerts?.length || !chartData.length || !selectedSystem) return [];
     const sysAlerts = alerts.filter((a) => a.class === selectedSystem);
     if (!sysAlerts.length) return [];
-    const dayFilter = selectedDay || '';
+    const chartStartMs = parseUtcMs(chartData[0]?.fullTs);
+    const chartEndMs = parseUtcMs(chartData[chartData.length - 1]?.fullTs);
+    if (chartStartMs == null || chartEndMs == null) return [];
     return sysAlerts
-      .filter((a) => {
-        if (!dayFilter) return true;
-        const aStart = String(a.start_ts || '').substring(0, 10);
-        const aEnd = String(a.end_ts || '').substring(0, 10);
-        return aStart === dayFilter || aEnd === dayFilter;
-      })
-      .map((a) => ({
-        start: findClosestIdx(a.start_ts, chartData),
-        end: findClosestIdx(a.end_ts, chartData),
-        severity: a.severity || 'MEDIUM',
-        minute_count: a.minute_count || 1,
-        severity_mix: a.severity_mix || '',
-        high_count: a.high_count || 0,
-        medium_count: a.medium_count || 0,
-        low_count: a.low_count || 0,
-        view_type: a.view_type || alarmView,
-        rawStart: a.start_ts,
-        rawEnd: a.end_ts,
-      }))
-      .filter((b) => b.start !== null && b.end !== null)
       .map((b) => {
-        if (b.start === b.end) {
-          return { ...b, start: b.start - 0.45, end: b.end + 0.45 };
+        const rawStartMs = parseUtcMs(b.start_ts || b.event_start);
+        const rawEndMs = parseUtcMs(b.end_ts || b.event_end || b.start_ts || b.event_start);
+        if (rawStartMs == null || rawEndMs == null) return null;
+        const minMs = Math.min(rawStartMs, rawEndMs);
+        const maxMs = Math.max(rawStartMs, rawEndMs);
+        if (maxMs < chartStartMs || minMs > chartEndMs) return null;
+        const clippedStartMs = Math.max(minMs, chartStartMs);
+        const clippedEndMs = Math.min(maxMs, chartEndMs);
+        const start = findClosestIdx(clippedStartMs, chartData);
+        const end = findClosestIdx(clippedEndMs, chartData);
+        if (start == null || end == null) return null;
+        const band = {
+          start: Math.min(start, end),
+          end: Math.max(start, end),
+          severity: b.severity || 'MEDIUM',
+          minute_count: b.minute_count || 1,
+          severity_mix: b.severity_mix || '',
+          high_count: b.high_count || 0,
+          medium_count: b.medium_count || 0,
+          low_count: b.low_count || 0,
+          view_type: b.view_type || 'span',
+          rawStart: b.start_ts || b.event_start,
+          rawEnd: b.end_ts || b.event_end || b.start_ts || b.event_start,
+        };
+        if (band.start === band.end) {
+          return { ...band, start: band.start - 0.45, end: band.end + 0.45 };
         }
-        return b;
-      });
-  }, [alerts, chartData, selectedDay, selectedSystem, alarmView, findClosestIdx]);
+        return band;
+      })
+      .filter(Boolean);
+  }, [alerts, chartData, selectedSystem, findClosestIdx]);
 
   // Inline downtime fallback
   const inlineDowntimeBands = useMemo(() => {
@@ -963,10 +850,10 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
   const visibleAlarmBands = showAlarms ? alarmBands : [];
 
   const sensors = qualityData?.sensors || [];
-  const hasHighAlarms = visibleAlarmBands.some((band) => band.severity === 'HIGH');
-  const hasMediumAlarms = visibleAlarmBands.some((band) => band.severity === 'MEDIUM');
-  const hasLowAlarms = visibleAlarmBands.some((band) => band.severity === 'LOW');
-  const hasMixedAlarms = visibleAlarmBands.some((band) => band.severity === 'MIXED');
+  const hasHighAlarms = visibleAlarmBands.some((band) => band && band.severity === 'HIGH');
+  const hasMediumAlarms = visibleAlarmBands.some((band) => band && band.severity === 'MEDIUM');
+  const hasLowAlarms = visibleAlarmBands.some((band) => band && band.severity === 'LOW');
+  const hasMixedAlarms = visibleAlarmBands.some((band) => band && band.severity === 'MIXED');
 
   // Y-domain for sensor view (Engine A/B only, SQS is shown as heatstrip)
   const sensorYDomain = useMemo(() => {
@@ -1066,7 +953,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
     if (!showAlarms || !e || !e.activePayload || !e.activePayload.length || !onSelectAlert || !alerts?.length) return;
     const idx = e.activePayload[0]?.payload?._idx;
     if (idx == null) return;
-    const band = visibleAlarmBands.find((candidate) => idx >= candidate.start && idx <= candidate.end);
+    const band = visibleAlarmBands.find((candidate) => candidate && idx >= candidate.start && idx <= candidate.end);
     if (!band) return;
 
     const match = alerts.find((alert) => {
@@ -1082,13 +969,13 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
     }
 
     const row = e.activePayload[0]?.payload;
-    const pointTs = row?.fullTs ? new Date(String(row.fullTs)).getTime() : null;
-    if (pointTs == null || Number.isNaN(pointTs)) return;
+    const pointTs = parseUtcMs(row?.fullTs);
+    if (pointTs == null) return;
     const overlapMatch = alerts.find((alert) => {
       if (alert.class !== selectedSystem) return false;
-      const start = new Date(String(alert.start_ts)).getTime();
-      const end = new Date(String(alert.end_ts)).getTime();
-      return !Number.isNaN(start) && !Number.isNaN(end) && start <= pointTs && pointTs <= end;
+      const start = parseUtcMs(alert.start_ts || alert.event_start);
+      const end = parseUtcMs(alert.end_ts || alert.event_end || alert.start_ts || alert.event_start);
+      return start != null && end != null && start <= pointTs && pointTs <= end;
     });
     if (overlapMatch) onSelectAlert(overlapMatch);
   }, [showAlarms, onSelectAlert, alerts, visibleAlarmBands, selectedSystem]);
@@ -1100,10 +987,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
     <GlassCard delay={0.4} style={{ marginTop: '8px' }} intensity="strong">
       <div style={styles.heading}>
         Sensor Quality
-        <InfoTooltip text={alarmView === 'span'
-          ? 'Subsystem-level system score and adaptive threshold by default. Switch to sensor breakdown to see per-sensor SQS, Engine A, and Engine B scores. Use Show Alarms to overlay dynamic contiguous alarm spans on the chart.'
-          : 'Subsystem-level system score and adaptive threshold by default. Switch to sensor breakdown to see per-sensor SQS, Engine A, and Engine B scores. Use Show Alarms to overlay source minute-level system alarms on the chart.'} />
-        {filterLabel && <span style={{ ...filterBadgeStyle, cursor: 'pointer' }} onClick={onFilterClick}>{filterLabel}</span>}
+        <InfoTooltip text="Subsystem-level system score and adaptive threshold by default. Switch to sensor breakdown to see per-sensor SQS, Engine A, and Engine B scores. Use Show Anomalies to overlay dynamic contiguous anomaly spans on the chart." />
       </div>
 
       <div style={styles.tabRow}>
@@ -1155,7 +1039,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
             zIndex: 10, borderRadius: '8px',
             color: '#C8D6C0', fontSize: '13px', fontWeight: 500, letterSpacing: '0.3px',
           }}>
-            Updating alarm overlays...
+            Updating anomaly overlays...
           </div>
         )}
         {loading ? (
@@ -1197,19 +1081,19 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
                 {hasHighAlarms && (
                   <div style={{ ...styles.legendItem, cursor: 'default' }}>
                     <div style={{ width: '14px', height: '8px', background: getAlarmStyle('HIGH').swatchBg, borderRadius: '2px', border: getAlarmStyle('HIGH').swatchBorder }} />
-                    <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'High Span' : 'High Alarm'}</span>
+                    <span style={{ fontWeight: 600 }}>High Span</span>
                   </div>
                 )}
                 {hasMediumAlarms && (
                   <div style={{ ...styles.legendItem, cursor: 'default' }}>
                     <div style={{ width: '14px', height: '8px', background: getAlarmStyle('MEDIUM').swatchBg, borderRadius: '2px', border: getAlarmStyle('MEDIUM').swatchBorder }} />
-                    <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'Medium Span' : 'Medium Alarm'}</span>
+                    <span style={{ fontWeight: 600 }}>Medium Span</span>
                   </div>
                 )}
                 {hasLowAlarms && (
                   <div style={{ ...styles.legendItem, cursor: 'default' }}>
                     <div style={{ width: '14px', height: '8px', background: getAlarmStyle('LOW').swatchBg, borderRadius: '2px', border: getAlarmStyle('LOW').swatchBorder }} />
-                    <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'Low Span' : 'Low Alarm'}</span>
+                    <span style={{ fontWeight: 600 }}>Low Span</span>
                   </div>
                 )}
                 {hasMixedAlarms && (
@@ -1245,19 +1129,19 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
                 {hasHighAlarms && (
                   <div style={{ ...styles.legendItem, cursor: 'default' }}>
                     <div style={{ width: '14px', height: '8px', background: getAlarmStyle('HIGH').swatchBg, borderRadius: '2px', border: getAlarmStyle('HIGH').swatchBorder }} />
-                    <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'High Span' : 'High Alarm'}</span>
+                    <span style={{ fontWeight: 600 }}>High Span</span>
                   </div>
                 )}
                 {hasMediumAlarms && (
                   <div style={{ ...styles.legendItem, cursor: 'default' }}>
                     <div style={{ width: '14px', height: '8px', background: getAlarmStyle('MEDIUM').swatchBg, borderRadius: '2px', border: getAlarmStyle('MEDIUM').swatchBorder }} />
-                    <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'Medium Span' : 'Medium Alarm'}</span>
+                    <span style={{ fontWeight: 600 }}>Medium Span</span>
                   </div>
                 )}
                 {hasLowAlarms && (
                   <div style={{ ...styles.legendItem, cursor: 'default' }}>
                     <div style={{ width: '14px', height: '8px', background: getAlarmStyle('LOW').swatchBg, borderRadius: '2px', border: getAlarmStyle('LOW').swatchBorder }} />
-                    <span style={{ fontWeight: 600 }}>{alarmView === 'span' ? 'Low Span' : 'Low Alarm'}</span>
+                    <span style={{ fontWeight: 600 }}>Low Span</span>
                   </div>
                 )}
                 {hasMixedAlarms && (
@@ -1271,6 +1155,14 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
             )}
 
             <div style={{ ...styles.controlContainer, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              {viewMode === 'subsystem' && (
+                <>
+                  <div style={controlPillStyle(showContributions, '#7B1FA2')} onClick={() => setShowContributions((v) => !v)}>
+                    {contribLoading ? 'Loading...' : 'Sensor Contributions'}
+                  </div>
+                  <div style={{ width: '1px', height: '20px', background: 'rgba(176,205,174,0.7)', margin: '0 2px' }} />
+                </>
+              )}
               <div
                 onClick={() => setShowAlarms((current) => !current)}
                 style={{
@@ -1281,30 +1173,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
                   color: showAlarms ? '#9A6A00' : '#8A928A', fontWeight: 600, transition: 'all 0.2s',
                 }}
               >
-                <span>Show Alarms</span>
-              </div>
-              {showAlarms && (
-                <>
-                  <div style={controlPillStyle(alarmView === 'minute')} onClick={() => setAlarmView('minute')}>
-                    Minute Windows
-                  </div>
-                  <div style={controlPillStyle(alarmView === 'span')} onClick={() => setAlarmView('span')}>
-                    Alarm Spans
-                  </div>
-                </>
-              )}
-              {viewMode === 'subsystem' && (
-                <div style={controlPillStyle(showContributions, '#7B1FA2')} onClick={() => setShowContributions((v) => !v)}>
-                  {contribLoading ? 'Loading...' : 'Sensor Contributions'}
-                </div>
-              )}
-              <div style={{
-                display: 'inline-flex', alignItems: 'center', gap: '4px',
-                fontSize: '10px', padding: '4px 12px', borderRadius: '20px',
-                border: '1px solid rgba(203,230,200,0.6)', background: 'rgba(255,255,255,0.6)',
-                color: '#8A928A', fontWeight: 500,
-              }}>
-                Drag to zoom
+                <span>Show Anomalies</span>
               </div>
               {isZoomed && onZoomReset && (
                 <div onClick={onZoomReset} style={{
@@ -1318,42 +1187,6 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
                 </div>
               )}
 
-              {/* Peak event indicator */}
-              {showAlarms && activeFp && (
-                <div
-                  onClick={() => {
-                    if (onZoomChange && activeFp.event_start && activeFp.event_end) {
-                      const pad = 30 * 60 * 1000;
-                      const s = new Date(new Date(activeFp.event_start).getTime() - pad);
-                      const e = new Date(new Date(activeFp.event_end).getTime() + pad);
-                      const fmt = (d) => d.toISOString().substring(0, 19).replace('T', ' ');
-                      onZoomChange({ start: fmt(s), end: fmt(e) });
-                    }
-                    setPeakModalOpen(true);
-                  }}
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', gap: '6px',
-                    fontSize: '10.5px', cursor: 'pointer', marginLeft: 'auto',
-                    color: '#D32F2F', fontWeight: 600, transition: 'opacity 0.2s',
-                    opacity: 0.85, userSelect: 'none',
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.85'; }}
-                >
-                  <span style={{
-                    width: '7px', height: '7px', borderRadius: '50%', background: '#D32F2F',
-                    display: 'inline-block', flexShrink: 0,
-                    boxShadow: '0 0 0 3px rgba(211,47,47,0.15)',
-                    animation: 'peakPulse 2s ease-in-out infinite',
-                  }} />
-                  <span>{activeFp.system_id} peak event</span>
-                  <span style={{ fontWeight: 500, color: '#8A928A', fontSize: '10px' }}>
-                    {activeFp.event_start.substring(0, 10)} {activeFp.event_start.substring(11, 16)}--{activeFp.event_end.substring(11, 16)}
-                  </span>
-                  <span style={{ fontSize: '9px', color: '#D32F2F', opacity: 0.6 }}>View</span>
-                  <style>{`@keyframes peakPulse { 0%,100% { box-shadow: 0 0 0 3px rgba(211,47,47,0.15); } 50% { box-shadow: 0 0 0 6px rgba(211,47,47,0.08); } }`}</style>
-                </div>
-              )}
             </div>
             <ResponsiveContainer width="100%" height={showContributions && viewMode === 'subsystem' ? 400 : 340}>
               <ComposedChart
@@ -1523,7 +1356,7 @@ function SensorQualityGrid({ filterLabel, onFilterClick, onSelectAlert, selected
         )}
       </div>
 
-      {/* Peak Alarm Detail Modal */}
+      {/* Peak Anomaly Detail Modal */}
       {peakModalOpen && activeFp && (
         <PeakAlarmDetailModal fingerprint={activeFp} onClose={() => setPeakModalOpen(false)} />
       )}

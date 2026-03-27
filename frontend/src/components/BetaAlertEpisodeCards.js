@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import GlassCard from './GlassCard';
 import InfoTooltip from './InfoTooltip';
-import { getBetaAlerts, getBetaRadarFingerprints } from '../utils/api';
+import { getBetaAlerts } from '../utils/api';
 import {
   formatDuration,
   formatScore,
@@ -261,6 +261,77 @@ const styles = {
         : 'linear-gradient(90deg, rgba(255,213,79,0.95), #FFB300)',
     transition: 'width 0.8s ease',
   }),
+  minuteSection: {
+    marginTop: '12px',
+    borderTop: '1px solid rgba(203,230,200,0.45)',
+    paddingTop: '10px',
+  },
+  minuteTitle: {
+    fontSize: '10px',
+    fontWeight: 700,
+    color: '#6B736B',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+    marginBottom: '6px',
+  },
+  minuteTableWrap: {
+    border: '1px solid rgba(203,230,200,0.45)',
+    borderRadius: '10px',
+    background: 'rgba(255,255,255,0.62)',
+    maxHeight: '160px',
+    overflowY: 'auto',
+  },
+  minuteTable: {
+    width: '100%',
+    borderCollapse: 'collapse',
+    fontSize: '11px',
+  },
+  minuteTh: {
+    position: 'sticky',
+    top: 0,
+    background: 'rgba(245,248,245,0.98)',
+    color: '#7D877D',
+    fontWeight: 700,
+    textAlign: 'left',
+    padding: '6px 8px',
+    borderBottom: '1px solid rgba(203,230,200,0.5)',
+    whiteSpace: 'nowrap',
+  },
+  minuteTd: {
+    padding: '5px 8px',
+    borderBottom: '1px solid rgba(240,244,240,0.9)',
+    color: '#2D332D',
+    whiteSpace: 'nowrap',
+    fontVariantNumeric: 'tabular-nums',
+  },
+  minuteSeverityBadge: (severity) => ({
+    display: 'inline-block',
+    padding: '1px 6px',
+    borderRadius: '10px',
+    fontSize: '10px',
+    fontWeight: 700,
+    background: severity === 'HIGH'
+      ? 'rgba(239,83,80,0.12)'
+      : severity === 'MEDIUM'
+        ? 'rgba(255,167,38,0.16)'
+        : severity === 'MIXED'
+          ? 'rgba(120,144,156,0.18)'
+          : 'rgba(255,213,79,0.2)',
+    color: severity === 'HIGH'
+      ? '#C62828'
+      : severity === 'MEDIUM'
+        ? '#E65100'
+        : severity === 'MIXED'
+          ? '#455A64'
+        : '#9A6A00',
+    border: severity === 'HIGH'
+      ? '1px solid rgba(239,83,80,0.25)'
+      : severity === 'MEDIUM'
+        ? '1px solid rgba(255,167,38,0.28)'
+        : severity === 'MIXED'
+          ? '1px solid rgba(120,144,156,0.32)'
+        : '1px solid rgba(255,193,7,0.3)',
+  }),
   emptyState: {
     textAlign: 'center',
     padding: '48px 20px',
@@ -318,22 +389,25 @@ const timeBadgeStyle = {
   whiteSpace: 'nowrap', letterSpacing: '0.02em', cursor: 'pointer',
 };
 
-function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilterClick }) {
-  const [alerts, setAlerts] = useState([]);
+const parseUtcMs = (value) => {
+  if (value == null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const ms = Date.parse(normalized);
+  return Number.isNaN(ms) ? null : ms;
+};
+
+function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilterClick, selectedSystem, fingerprints: fingerprintsProp }) {
+  const [spanAlerts, setSpanAlerts] = useState([]);
+  const [minuteAlerts, setMinuteAlerts] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [alarmView, setAlarmView] = useState('minute');
   const [severityFilter, setSeverityFilter] = useState('ALL');
   const [classFilter, setClassFilter] = useState('ALL');
   const [sortBy, setSortBy] = useState('RECENT');
   const [expanded, setExpanded] = useState(false);
-  const [fingerprints, setFingerprints] = useState([]);
+  const fingerprints = useMemo(() => (fingerprintsProp || []).filter(f => f.has_alarm && f.event_start), [fingerprintsProp]);
   const headerRef = useRef(null);
-
-  useEffect(() => {
-    getBetaRadarFingerprints()
-      .then((res) => setFingerprints((res.data.fingerprints || []).filter(f => f.has_alarm && f.event_start)))
-      .catch(() => setFingerprints([]));
-  }, []);
 
   const isPeakAlarm = useCallback((alert) => {
     if (!fingerprints.length) return false;
@@ -350,31 +424,44 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilt
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    getBetaAlerts({ alarm_view: alarmView })
-      .then((res) => {
+    const params = { class: selectedSystem };
+    if (!selectedSystem) delete params.class;
+    const spanParams = { ...params, alarm_view: 'span' };
+    const minuteParams = { ...params, alarm_view: 'minute' };
+    Promise.all([
+      getBetaAlerts(spanParams),
+      getBetaAlerts(minuteParams),
+    ])
+      .then(([spanRes, minuteRes]) => {
         if (!cancelled) {
-          setAlerts(res.data.alerts || []);
+          setSpanAlerts(spanRes?.data?.alerts || []);
+          setMinuteAlerts(minuteRes?.data?.alerts || []);
         }
       })
       .catch(() => {
-        if (!cancelled) setAlerts([]);
+        if (!cancelled) {
+          setSpanAlerts([]);
+          setMinuteAlerts([]);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [alarmView]);
+  }, [selectedSystem]);
 
   useEffect(() => {
-    if (alarmView !== 'span' && severityFilter === 'MIXED') {
-      setSeverityFilter('ALL');
-    }
     setExpanded(false);
-  }, [alarmView, severityFilter]);
+  }, [severityFilter]);
+
+  useEffect(() => {
+    setClassFilter(selectedSystem || 'ALL');
+    setExpanded(false);
+  }, [selectedSystem]);
 
   const nonNormalAlerts = useMemo(() => {
-    if (!alerts || !alerts.length) return [];
-    let filtered = alerts.filter((alert) => alert.class !== 'NORMAL');
+    if (!spanAlerts || !spanAlerts.length) return [];
+    let filtered = spanAlerts.filter((alert) => alert.class !== 'NORMAL');
     if (selectedDay) {
       filtered = filtered.filter((alert) => {
         const startDate = alert.start_ts ? String(alert.start_ts).substring(0, 10) : '';
@@ -383,7 +470,31 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilt
       });
     }
     return filtered;
-  }, [alerts, selectedDay]);
+  }, [spanAlerts, selectedDay]);
+
+  const minuteNonNormalAlerts = useMemo(() => {
+    if (!minuteAlerts || !minuteAlerts.length) return [];
+    return minuteAlerts.filter((alert) => alert.class !== 'NORMAL');
+  }, [minuteAlerts]);
+
+  const getSpanMinuteRows = useCallback((spanAlert) => {
+    const spanStart = parseUtcMs(spanAlert.start_ts || spanAlert.event_start);
+    const spanEnd = parseUtcMs(spanAlert.end_ts || spanAlert.event_end || spanAlert.start_ts || spanAlert.event_start);
+    if (spanStart == null || spanEnd == null) return [];
+    return minuteNonNormalAlerts
+      .filter((minuteAlert) => {
+        if (minuteAlert.class !== spanAlert.class) return false;
+        const minuteStart = parseUtcMs(minuteAlert.start_ts || minuteAlert.event_start);
+        const minuteEnd = parseUtcMs(minuteAlert.end_ts || minuteAlert.event_end || minuteAlert.start_ts || minuteAlert.event_start);
+        if (minuteStart == null || minuteEnd == null) return false;
+        return minuteStart <= spanEnd && minuteEnd >= spanStart;
+      })
+      .sort((a, b) => {
+        const aTs = String(a.start_ts || a.event_start || '');
+        const bTs = String(b.start_ts || b.event_start || '');
+        return aTs.localeCompare(bTs);
+      });
+  }, [minuteNonNormalAlerts]);
 
   const availableClasses = useMemo(() => {
     const classes = new Set();
@@ -418,11 +529,12 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilt
   const visibleAlerts = expanded ? filteredAlerts : filteredAlerts.slice(0, INITIAL_SHOW);
   const hiddenCount = filteredAlerts.length - INITIAL_SHOW;
   const hasMore = hiddenCount > 0;
-  const hasActiveFilter = severityFilter !== 'ALL' || classFilter !== 'ALL';
+  const classFilterLocked = !!selectedSystem;
+  const hasActiveFilter = severityFilter !== 'ALL' || (!classFilterLocked && classFilter !== 'ALL');
 
   const clearFilters = () => {
     setSeverityFilter('ALL');
-    setClassFilter('ALL');
+    setClassFilter(selectedSystem || 'ALL');
     setExpanded(false);
   };
 
@@ -445,10 +557,8 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilt
     <GlassCard delay={0.55} style={{ marginTop: '8px' }} intensity="normal" padding="20px 24px 28px">
       <div ref={headerRef} style={styles.headerRow}>
         <div style={styles.heading}>
-          System Alarms ({filteredAlerts.length} of {nonNormalAlerts.length})
-          <InfoTooltip text={alarmView === 'span'
-            ? 'Each card represents one dynamic contiguous alarm span built from source minute-level subsystem alarms.'
-            : 'Each card represents one source minute-level system alarm row from the subsystem alarm data.'} />
+          System Anomalies ({filteredAlerts.length} of {nonNormalAlerts.length})
+          <InfoTooltip text="Each card represents one dynamic contiguous anomaly span built from source minute-level subsystem anomalies." />
         </div>
         {filterLabel && <span style={timeBadgeStyle} onClick={onFilterClick}>{filterLabel}</span>}
         {hasActiveFilter && (
@@ -474,35 +584,15 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilt
 
       <div style={styles.controlsStack}>
         <div style={styles.primaryControlRow}>
-          <div style={styles.modeToggle}>
-            <span style={styles.modeLabel}>Alarm View</span>
-            <motion.span
-              style={styles.modePill(alarmView === 'minute')}
-              onClick={() => setAlarmView('minute')}
-              whileHover={{ scale: 1.03 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              Minute Windows
-            </motion.span>
-            <motion.span
-              style={styles.modePill(alarmView === 'span')}
-              onClick={() => setAlarmView('span')}
-              whileHover={{ scale: 1.03 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              Alarm Spans
-            </motion.span>
-          </div>
-
           <span style={styles.resultBadge}>
-            Showing {visibleAlerts.length} of {filteredAlerts.length} {alarmView === 'span' ? 'alarm span' : 'system alarm row'}{filteredAlerts.length !== 1 ? 's' : ''}
+            Showing {visibleAlerts.length} of {filteredAlerts.length} anomaly span{filteredAlerts.length !== 1 ? 's' : ''}
           </span>
         </div>
 
         <div style={styles.secondaryControlRow}>
           <div style={styles.controlGroup}>
             <span style={styles.filterLabel}>Severity</span>
-            {['ALL', 'HIGH', 'MEDIUM', 'LOW', ...(alarmView === 'span' ? ['MIXED'] : [])].map((severity) => (
+            {['ALL', 'HIGH', 'MEDIUM', 'LOW', 'MIXED'].map((severity) => (
               <motion.span
                 key={severity}
                 style={styles.pill(severityFilter === severity)}
@@ -515,28 +605,35 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilt
             ))}
           </div>
 
-          <div style={styles.controlGroup}>
-            <span style={styles.filterLabel}>Class</span>
-            <motion.span
-              style={styles.pill(classFilter === 'ALL')}
-              onClick={() => setClassFilter('ALL')}
-              whileHover={{ scale: 1.04 }}
-              whileTap={{ scale: 0.97 }}
-            >
-              ALL
-            </motion.span>
-            {availableClasses.map((cls) => (
+          {classFilterLocked ? (
+            <div style={styles.controlGroup}>
+              <span style={styles.filterLabel}>Subsystem</span>
+              <span style={styles.pill(true)}>{selectedSystem}</span>
+            </div>
+          ) : (
+            <div style={styles.controlGroup}>
+              <span style={styles.filterLabel}>Class</span>
               <motion.span
-                key={cls}
-                style={styles.pill(classFilter === cls)}
-                onClick={() => setClassFilter(cls)}
+                style={styles.pill(classFilter === 'ALL')}
+                onClick={() => setClassFilter('ALL')}
                 whileHover={{ scale: 1.04 }}
                 whileTap={{ scale: 0.97 }}
               >
-                {cls}
+                ALL
               </motion.span>
-            ))}
-          </div>
+              {availableClasses.map((cls) => (
+                <motion.span
+                  key={cls}
+                  style={styles.pill(classFilter === cls)}
+                  onClick={() => setClassFilter(cls)}
+                  whileHover={{ scale: 1.04 }}
+                  whileTap={{ scale: 0.97 }}
+                >
+                  {cls}
+                </motion.span>
+              ))}
+            </div>
+          )}
 
           <div style={styles.controlGroup}>
             <span style={styles.filterLabel}>Sort</span>
@@ -569,16 +666,16 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilt
           zIndex: 10, borderRadius: '8px',
           color: '#C8D6C0', fontSize: '13px', fontWeight: 500, letterSpacing: '0.3px',
         }}>
-          Updating alarm view...
+          Updating anomaly view...
         </div>
       )}
       {!filteredAlerts.length ? (
         <div style={styles.emptyState}>
           {loading
-            ? 'Loading system alarms...'
+            ? 'Loading system anomalies...'
             : nonNormalAlerts.length === 0
-            ? `No ${alarmView === 'span' ? 'alarm spans' : 'system alarms'} were detected for the selected day.`
-            : `No ${alarmView === 'span' ? 'alarm spans' : 'system alarms'} match the current filters. Try adjusting the filter criteria above.`}
+            ? 'No anomaly spans were detected for the selected day.'
+            : 'No anomaly spans match the current filters. Try adjusting the filter criteria above.'}
         </div>
       ) : (
         <>
@@ -590,9 +687,9 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilt
                   : [];
                 const key = `${alert.start_ts}-${alert.end_ts}-${alert.class}-${idx}`;
                 const displaySeverity = getAlertDisplaySeverity(alert);
-                const minuteCount = Number(alert.minute_count || 1);
+                const spanMinuteRows = getSpanMinuteRows(alert);
+                const minuteCount = spanMinuteRows.length;
                 const severityMixLabel = getSeverityMixLabel(alert);
-                const isSpanView = alarmView === 'span';
                 return (
                   <motion.div
                     key={key}
@@ -614,13 +711,13 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilt
                       <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                         <span style={styles.severityBadge(displaySeverity)}>{displaySeverity}</span>
                         <span style={styles.classBadge(alert.class)}>{alert.class}</span>
-                        {isSpanView && isPeakAlarm(alert) && (
+                        {isPeakAlarm(alert) && (
                           <span style={{
                             fontSize: '9px', fontWeight: 700, color: '#fff',
                             background: 'linear-gradient(135deg, #E65100, #FF6D00)',
                             padding: '2px 7px', borderRadius: '8px', letterSpacing: '0.04em',
                             textTransform: 'uppercase', whiteSpace: 'nowrap',
-                          }}>Peak Alarm</span>
+                          }}>Peak Anomaly</span>
                         )}
                       </div>
                     </div>
@@ -628,25 +725,21 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilt
                     <div style={styles.timeRange}>{formatAlarmWindow(alert)}</div>
 
                     <div style={styles.detail}>
-                      <span style={styles.detailLabel}>{alarmView === 'span' ? 'Span' : 'Window'}</span>
+                      <span style={styles.detailLabel}>Span</span>
                       <span style={styles.detailValue}>{formatDuration(alert.duration_minutes)}</span>
                     </div>
-                    {alarmView === 'span' && (
-                      <>
-                        <div style={styles.detail}>
-                          <span style={styles.detailLabel}>Alerts In Span</span>
-                          <span style={styles.detailValue}>{minuteCount}</span>
-                        </div>
-                        <div style={styles.detail}>
-                          <span style={styles.detailLabel}>Severity Mix</span>
-                          <span style={styles.detailValue}>{severityMixLabel || '--'}</span>
-                        </div>
-                      </>
-                    )}
                     <div style={styles.detail}>
-                      <span style={styles.detailLabel}>{isSpanView ? 'Peak Risk Score' : 'Risk Score'}</span>
+                      <span style={styles.detailLabel}>Anomalies In Span</span>
+                      <span style={styles.detailValue}>{minuteCount}</span>
+                    </div>
+                    <div style={styles.detail}>
+                      <span style={styles.detailLabel}>Severity Mix</span>
+                      <span style={styles.detailValue}>{severityMixLabel || '--'}</span>
+                    </div>
+                    <div style={styles.detail}>
+                      <span style={styles.detailLabel}>Peak Risk Score</span>
                       <span style={styles.detailValue}>
-                        {formatScore(isSpanView ? alert.peak_risk_score : alert.risk_score)}
+                        {formatScore(alert.peak_risk_score)}
                         {alert.adaptive_threshold != null && (
                           <span style={{ color: '#8A928A', fontWeight: 400, fontSize: '11px' }}>
                             {' / '}{formatScore(alert.adaptive_threshold)} threshold
@@ -660,22 +753,6 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilt
                         <span style={styles.detailValue}>{((alert.system_confidence || 0) * 100).toFixed(0)}%</span>
                       </div>
                     )}
-                    {alert.avg_sqs != null && (
-                      <div style={styles.detail}>
-                        <span style={styles.detailLabel}>Signal Quality</span>
-                        <span style={styles.detailValue}>{((alert.avg_sqs || 0) * 100).toFixed(0)}%</span>
-                      </div>
-                    )}
-                    {(alert.reliable_count > 0 || alert.degraded_count > 0) && (
-                      <div style={styles.detail}>
-                        <span style={styles.detailLabel}>Behavior</span>
-                        <span style={styles.detailValue}>
-                          {alert.reliable_count > 0 && <span style={{ color: '#2E7D32' }}>{alert.reliable_count} Reliable</span>}
-                          {alert.reliable_count > 0 && alert.degraded_count > 0 && ', '}
-                          {alert.degraded_count > 0 && <span style={{ color: '#E65100' }}>{alert.degraded_count} Degraded</span>}
-                        </span>
-                      </div>
-                    )}
                     <div style={styles.detail}>
                       <span style={styles.detailLabel}>Primary Sensor</span>
                       <span style={styles.detailValue}>{formatSensorName(alert.sensor_id)}</span>
@@ -684,7 +761,7 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilt
                     <div style={styles.riskBar}>
                       <div style={styles.riskBarFill(
                         alert.adaptive_threshold > 0
-                          ? (isSpanView ? alert.peak_risk_score : alert.risk_score) / alert.adaptive_threshold
+                          ? alert.peak_risk_score / alert.adaptive_threshold
                           : 0,
                         displaySeverity
                       )} />
@@ -703,7 +780,54 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilt
                       )}
                     </div>
 
-                    <div style={styles.viewMore}>View {alarmView === 'span' ? 'alarm span' : 'alarm row'} -&gt;</div>
+                    <div style={styles.minuteSection}>
+                      <div style={styles.minuteTitle}>Minute-by-minute anomalies ({spanMinuteRows.length})</div>
+                      {spanMinuteRows.length === 0 ? (
+                        <div style={{ fontSize: '11px', color: '#8A928A' }}>No minute-level rows found for this span.</div>
+                      ) : (
+                        <div style={styles.minuteTableWrap}>
+                          <table style={styles.minuteTable}>
+                            <thead>
+                              <tr>
+                                <th style={styles.minuteTh}>Window (UTC)</th>
+                                <th style={styles.minuteTh}>Severity</th>
+                                <th style={styles.minuteTh}>Risk Score</th>
+                                <th style={styles.minuteTh}>Confidence</th>
+                                <th style={styles.minuteTh}>Primary Sensor</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {spanMinuteRows.map((minuteRow, rowIdx) => (
+                                <tr key={`${minuteRow.start_ts}-${minuteRow.class}-${rowIdx}`}>
+                                  <td style={styles.minuteTd}>{formatAlarmWindow(minuteRow)}</td>
+                                  <td style={styles.minuteTd}>
+                                    <span style={styles.minuteSeverityBadge(getAlertDisplaySeverity(minuteRow))}>
+                                      {getAlertDisplaySeverity(minuteRow)}
+                                    </span>
+                                  </td>
+                                  <td style={styles.minuteTd}>
+                                    {formatScore(minuteRow.risk_score)}
+                                    {minuteRow.adaptive_threshold != null && (
+                                      <span style={{ color: '#8A928A', fontWeight: 400, fontSize: '10px' }}>
+                                        {' / '}{formatScore(minuteRow.adaptive_threshold)}
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td style={styles.minuteTd}>
+                                    {minuteRow.system_confidence != null
+                                      ? `${((minuteRow.system_confidence || 0) * 100).toFixed(0)}%`
+                                      : '--'}
+                                  </td>
+                                  <td style={styles.minuteTd}>{formatSensorName(minuteRow.sensor_id)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={styles.viewMore}>View anomaly span -&gt;</div>
                   </motion.div>
                 );
               })}
@@ -792,7 +916,7 @@ function BetaAlertEpisodeCards({ onSelectAlert, selectedDay, filterLabel, onFilt
               >
                 ^
               </motion.span>
-              Collapse System Alarms
+              Collapse System Anomaly Spans
             </motion.button>,
             document.body
           )}

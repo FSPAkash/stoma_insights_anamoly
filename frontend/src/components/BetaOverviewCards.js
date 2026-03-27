@@ -8,21 +8,8 @@ import {
 } from 'recharts';
 import GlassCard from './GlassCard';
 import InfoTooltip from './InfoTooltip';
-import { getBetaOverview, getBetaSubsystems, getBetaRadarFingerprints, getBetaSensorQualityWindow, getBetaAlerts } from '../utils/api';
+import { getBetaOverview, getBetaSubsystems, getBetaSensorQualityWindow, getBetaAlerts } from '../utils/api';
 import { systemColor, systemBgColor, formatSensorName } from '../utils/formatters';
-
-const SENSOR_PALETTE = [
-  '#1B5E20', '#0D47A1', '#E65100', '#7B1FA2', '#004D40',
-  '#BF360C', '#1A237E', '#33691E', '#880E4F', '#01579B',
-  '#F57F17', '#4A148C', '#006064', '#3E2723',
-];
-
-const METRIC_SUFFIXES = [
-  { key: 'a', label: 'Engine A', color: '#E65100' },
-  { key: 'b', label: 'Engine B', color: '#7B1FA2' },
-];
-
-const SQS_COLOR = '#1976D2';
 
 const getAlarmStyle = (severity) => (
   severity === 'HIGH'
@@ -32,11 +19,21 @@ const getAlarmStyle = (severity) => (
       : { areaFill: 'rgba(120,144,156,0.16)', areaStroke: 'rgba(120,144,156,0.35)' }
 );
 
+const parseUtcMs = (value) => {
+  if (value == null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const ms = Date.parse(normalized);
+  return Number.isNaN(ms) ? null : ms;
+};
+
 const styles = {
   grid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(5, 1fr)',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
     gap: '16px',
+    alignItems: 'stretch',
   },
   cardInner: {
     height: '160px',
@@ -95,9 +92,6 @@ function SubsystemDetectedModal({ open, onClose, subsystems }) {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', paddingBottom: '16px', borderBottom: '1px solid rgba(203,230,200,0.4)' }}>
               <div>
                 <div style={{ fontSize: '16px', fontWeight: 700, color: '#1B5E20' }}>Detected Subsystems</div>
-                <div style={{ fontSize: '12px', color: '#6B736B', marginTop: '2px' }}>
-                  {subsystems.length} subsystem{subsystems.length !== 1 ? 's' : ''} identified via hierarchical clustering
-                </div>
               </div>
               <motion.button
                 style={{ width: '32px', height: '32px', borderRadius: '10px', background: 'rgba(27,94,32,0.08)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', color: '#6B736B', fontWeight: 600 }}
@@ -177,7 +171,7 @@ const RadarTooltipContent = ({ active, payload }) => {
   );
 };
 
-/* ─── Peak Alarm Detail Modal (from overview card) ─── */
+/* ─── Peak Anomaly Detail Modal (from overview card) ─── */
 function PeakAlarmDetailModal({ fingerprint, onClose }) {
   if (!fingerprint) return null;
   const fp = fingerprint;
@@ -187,8 +181,6 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
   const [chartLoading, setChartLoading] = useState(true);
   const [qualityData, setQualityData] = useState(null);
   const [alerts, setAlerts] = useState([]);
-  const [modalViewMode, setModalViewMode] = useState('subsystem');
-  const [modalMetric, setModalMetric] = useState('a');
   const [visibleSensors, setVisibleSensors] = useState({});
 
   /* Fetch chart data independently -- does NOT touch SensorQualityGrid */
@@ -206,7 +198,7 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
       winEnd = new Date(evEnd.getTime() + pad).toISOString();
     }
     Promise.all([
-      getBetaSensorQualityWindow(fp.system_id, winStart, winEnd, 1),
+      getBetaSensorQualityWindow(fp.system_id, winStart, winEnd),
       getBetaAlerts({ alarm_view: 'subsystem' }).catch(() => ({ data: { alerts: [] } })),
     ]).then(([qRes, aRes]) => {
       if (cancelled) return;
@@ -232,34 +224,19 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
   }, [qualityData]);
 
   /* Build sensor-level chart rows */
-  const sensorChartData = useMemo(() => {
-    if (!qualityData?.timeseries?.length) return [];
-    const allSensors = qualityData.sensors || [];
-    return qualityData.timeseries.map((row, i) => {
-      const sqsVals = allSensors.map((s) => {
-        const v = row[`${s}__sqs`];
-        return (v != null && isFinite(v)) ? v : 0;
-      });
-      const avgSqsPct = sqsVals.length ? (sqsVals.reduce((a, b) => a + b, 0) / sqsVals.length) * 100 : null;
-      return {
-        ...row, _idx: i, _avgSqsPct: avgSqsPct,
-        fullTs: row.ts ? String(row.ts) : '',
-        ts: row.ts ? String(row.ts).substring(11, 16) : '',
-      };
-    });
-  }, [qualityData]);
-
-  const chartData = modalViewMode === 'subsystem' ? subsystemChartData : sensorChartData;
+  const chartData = subsystemChartData;
 
   /* Extract event window slice */
   const eventSlice = useMemo(() => {
     if (!chartData.length || !fp.event_start || !fp.event_end) return [];
-    const evStart = new Date(fp.event_start).getTime();
-    const evEnd = new Date(fp.event_end).getTime();
+    const evStart = parseUtcMs(fp.event_start);
+    const evEnd = parseUtcMs(fp.event_end);
+    if (evStart == null || evEnd == null) return [];
     const pad = (evEnd - evStart) * 1.5 || 30 * 60 * 1000;
     return chartData.filter((row) => {
       if (!row.fullTs) return false;
-      const t = new Date(row.fullTs).getTime();
+      const t = parseUtcMs(row.fullTs);
+      if (t == null) return false;
       return t >= evStart - pad && t <= evEnd + pad;
     });
   }, [chartData, fp.event_start, fp.event_end]);
@@ -267,19 +244,34 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
   /* Alarm bands for event slice */
   const eventAlarmBands = useMemo(() => {
     if (!alerts.length || !eventSlice.length) return [];
-    const sysAlerts = alerts.filter((a) => a.system_id === fp.system_id);
+    const sysAlerts = alerts.filter((a) => (a.class || a.system_id) === fp.system_id);
+    const chartStartMs = parseUtcMs(eventSlice[0]?.fullTs);
+    const chartEndMs = parseUtcMs(eventSlice[eventSlice.length - 1]?.fullTs);
+    if (chartStartMs == null || chartEndMs == null) return [];
     const bands = [];
     for (const a of sysAlerts) {
-      const aStart = new Date(a.start_ts || a.event_start).getTime();
-      const aEnd = new Date(a.end_ts || a.event_end).getTime();
-      let startIdx = null, endIdx = null;
+      const rawStartMs = parseUtcMs(a.start_ts || a.event_start);
+      const rawEndMs = parseUtcMs(a.end_ts || a.event_end || a.start_ts || a.event_start);
+      if (rawStartMs == null || rawEndMs == null) continue;
+      const minMs = Math.min(rawStartMs, rawEndMs);
+      const maxMs = Math.max(rawStartMs, rawEndMs);
+      if (maxMs < chartStartMs || minMs > chartEndMs) continue;
+      const clippedStartMs = Math.max(minMs, chartStartMs);
+      const clippedEndMs = Math.min(maxMs, chartEndMs);
+      let startIdx = null;
+      let endIdx = null;
       for (const row of eventSlice) {
-        const t = new Date(row.fullTs).getTime();
-        if (t >= aStart && startIdx === null) startIdx = row._idx;
-        if (t <= aEnd) endIdx = row._idx;
+        const t = parseUtcMs(row.fullTs);
+        if (t == null) continue;
+        if (t >= clippedStartMs && startIdx === null) startIdx = row._idx;
+        if (t <= clippedEndMs) endIdx = row._idx;
       }
       if (startIdx != null && endIdx != null) {
-        bands.push({ start: startIdx, end: endIdx, severity: a.severity || 'MEDIUM' });
+        if (startIdx === endIdx) {
+          bands.push({ start: startIdx - 0.45, end: endIdx + 0.45, severity: a.severity || 'MEDIUM' });
+        } else {
+          bands.push({ start: Math.min(startIdx, endIdx), end: Math.max(startIdx, endIdx), severity: a.severity || 'MEDIUM' });
+        }
       }
     }
     return bands;
@@ -289,27 +281,17 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
   const eventYDomain = useMemo(() => {
     if (!eventSlice.length) return ['auto', 'auto'];
     let min = Infinity, max = -Infinity;
-    if (modalViewMode === 'sensor' && sensors.length) {
-      for (const row of eventSlice) {
-        for (const s of sensors) {
-          if (!visibleSensors[s]) continue;
-          const v = row[`${s}__${modalMetric}`];
-          if (v != null && isFinite(v)) { if (v < min) min = v; if (v > max) max = v; }
-        }
-      }
-    } else {
-      for (const row of eventSlice) {
-        for (const key of ['system_score', 'adaptive_threshold']) {
-          const v = row[key];
-          if (v != null && isFinite(v)) { if (v < min) min = v; if (v > max) max = v; }
-        }
+    for (const row of eventSlice) {
+      for (const key of ['system_score', 'adaptive_threshold']) {
+        const v = row[key];
+        if (v != null && isFinite(v)) { if (v < min) min = v; if (v > max) max = v; }
       }
     }
     if (!isFinite(min) || !isFinite(max)) return ['auto', 'auto'];
     const range = max - min;
     const p = range > 0 ? range * 0.1 : 0.1;
     return [Math.max(0, Math.floor((min - p) * 100) / 100), Math.ceil((max + p) * 100) / 100];
-  }, [eventSlice, modalViewMode, sensors, visibleSensors, modalMetric]);
+  }, [eventSlice]);
 
   const radarData = fp.sensors.map((s) => ({
     sensor: s.sensor,
@@ -325,8 +307,8 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
   const maxVal = Math.max(...radarData.map((d) => d.fault), baselineVal, 0.5);
 
   const subtitle = fp.has_alarm && fp.event_start
-    ? `Peak risk=${fp.peak_risk.toFixed(3)}  |  Event: ${fp.event_start.substring(0, 16)} to ${fp.event_end.substring(0, 16)}`
-    : 'No alarms detected -- showing latest AE contributions';
+    ? `Event: ${fp.event_start.substring(0, 16)} to ${fp.event_end.substring(0, 16)}`
+    : 'No anomalies detected';
 
   return ReactDOM.createPortal(
     <AnimatePresence>
@@ -359,7 +341,7 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
             <div>
               <div style={{ fontSize: '20px', fontWeight: 600, color: '#1B5E20', letterSpacing: '-0.02em' }}>
-                Fault Fingerprint -- {fp.system_id}
+                Fault Fingerprint - {fp.system_id}
               </div>
               <div style={{ fontSize: '11px', color: '#8A928A', marginTop: '4px' }}>{subtitle}</div>
             </div>
@@ -383,16 +365,6 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
                 color: '#D32F2F', letterSpacing: '0.04em',
               }}>PEAK RISK: {fp.peak_risk.toFixed(4)}</span>
             )}
-            <span style={{
-              fontSize: '10px', fontWeight: 600, padding: '3px 10px', borderRadius: '8px',
-              background: 'rgba(27,94,32,0.06)', border: '1px solid rgba(27,94,32,0.15)', color: '#1B5E20',
-            }}>{fp.sensor_count} sensors</span>
-            {fp.alarm_count > 0 && (
-              <span style={{
-                fontSize: '10px', fontWeight: 600, padding: '3px 10px', borderRadius: '8px',
-                background: 'rgba(230,81,0,0.08)', border: '1px solid rgba(230,81,0,0.2)', color: '#E65100',
-              }}>{fp.alarm_count} alarm event{fp.alarm_count > 1 ? 's' : ''}</span>
-            )}
           </div>
 
           {/* Event Window Chart */}
@@ -402,43 +374,11 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
             </div>
           ) : eventSlice.length > 0 && (
             <div style={{ marginBottom: '16px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <div style={{ fontSize: '10px', fontWeight: 700, color: '#8A928A', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                    Event Window
-                  </div>
-                  {fp.system_id !== 'ISOLATED' && (
-                    <div style={{ display: 'flex', gap: '3px' }}>
-                      {['subsystem', 'sensor'].map((v) => (
-                        <div key={v} onClick={() => setModalViewMode(v)} style={{
-                          padding: '2px 10px', borderRadius: '10px', fontSize: '9px', fontWeight: modalViewMode === v ? 600 : 400,
-                          cursor: 'pointer', border: modalViewMode === v ? '1.5px solid #1B5E20' : '1px solid rgba(203,230,200,0.4)',
-                          background: modalViewMode === v ? 'rgba(27,94,32,0.08)' : 'transparent',
-                          color: modalViewMode === v ? '#1B5E20' : '#8A928A',
-                        }}>
-                          {v === 'subsystem' ? 'System Score' : 'Sensor Breakdown'}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                {modalViewMode === 'sensor' && (
-                  <div style={{ display: 'flex', gap: '4px' }}>
-                    {METRIC_SUFFIXES.map(m => (
-                      <div key={m.key} style={{
-                        padding: '2px 10px', borderRadius: '10px', fontSize: '10px', fontWeight: modalMetric === m.key ? 600 : 400,
-                        cursor: 'pointer', border: modalMetric === m.key ? `1.5px solid ${m.color}` : '1px solid rgba(203,230,200,0.4)',
-                        background: modalMetric === m.key ? `${m.color}14` : 'transparent',
-                        color: modalMetric === m.key ? m.color : '#8A928A',
-                      }} onClick={() => setModalMetric(m.key)}>
-                        {m.label}
-                      </div>
-                    ))}
-                  </div>
-                )}
+              <div style={{ fontSize: '10px', fontWeight: 700, color: '#8A928A', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>
+                Event Window
               </div>
               <ResponsiveContainer width="100%" height={180}>
-                <LineChart data={eventSlice} margin={{ top: 5, right: modalViewMode === 'sensor' ? 50 : 12, bottom: 5, left: 0 }}>
+                <LineChart data={eventSlice} margin={{ top: 5, right: 12, bottom: 5, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,230,200,0.4)" />
                   <XAxis
                     dataKey="_idx" type="number" domain={['dataMin', 'dataMax']}
@@ -449,9 +389,6 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
                     }}
                   />
                   <YAxis yAxisId="left" domain={eventYDomain} tick={{ fontSize: 9, fill: '#8A928A' }} tickLine={false} />
-                  {modalViewMode === 'sensor' && (
-                    <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tick={{ fontSize: 8, fill: SQS_COLOR }} tickLine={false} tickFormatter={(v) => `${v}%`} />
-                  )}
                   <Tooltip
                     content={({ active, payload }) => {
                       if (!active || !payload?.length) return null;
@@ -489,31 +426,8 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
                       />
                     );
                   })}
-                  {modalViewMode === 'sensor' ? (
-                    <>
-                      <Line yAxisId="right" type="monotone" dataKey="_avgSqsPct" stroke={SQS_COLOR} strokeWidth={2} dot={false} name="Avg SQS %" connectNulls />
-                      {sensors.map((s, i) =>
-                        visibleSensors[s] ? (
-                          <Line
-                            key={s}
-                            yAxisId="left"
-                            type="monotone"
-                            dataKey={`${s}__${modalMetric}`}
-                            stroke={SENSOR_PALETTE[i % SENSOR_PALETTE.length]}
-                            strokeWidth={1.5}
-                            dot={false}
-                            name={formatSensorName(s)}
-                            connectNulls={false}
-                          />
-                        ) : null
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      <Line yAxisId="left" type="monotone" dataKey="system_score" stroke="#1B5E20" strokeWidth={2} dot={false} name="System Score" />
-                      <Line yAxisId="left" type="monotone" dataKey="adaptive_threshold" stroke="#E65100" strokeWidth={1.5} strokeDasharray="6 3" dot={false} name="Adaptive Threshold" />
-                    </>
-                  )}
+                  <Line yAxisId="left" type="monotone" dataKey="system_score" stroke="#1B5E20" strokeWidth={2} dot={false} name="System Score" />
+                  <Line yAxisId="left" type="monotone" dataKey="adaptive_threshold" stroke="#E65100" strokeWidth={1.5} strokeDasharray="6 3" dot={false} name="Adaptive Threshold" />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -535,60 +449,6 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
             </RadarChart>
           </ResponsiveContainer>
 
-          {/* Top contributor */}
-          {topSensor && (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: '10px',
-              padding: '10px 14px', borderRadius: '10px', marginTop: '8px',
-              background: 'rgba(239,83,80,0.04)', border: '1px solid rgba(239,83,80,0.15)',
-            }}>
-              <div>
-                <div style={{ fontSize: '9.5px', fontWeight: 600, color: '#8A928A', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Top Contributor</div>
-                <div style={{ fontSize: '13px', fontWeight: 700, color: '#2c3e50' }}>{formatSensorName(topSensor.sensor)}</div>
-                <div style={{ fontSize: '10px', color: '#8A928A' }}>
-                  Value: {topSensor.fault.toFixed(4)}
-                  {topSensor.sqs != null && ` | SQS: ${topSensor.sqs.toFixed(2)}`}
-                  {topSensor.trust && ` | ${topSensor.trust}`}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Sensor table */}
-          <div style={{ marginTop: '14px' }}>
-            <div style={{ fontSize: '10px', fontWeight: 700, color: '#8A928A', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>
-              Sensor Detail ({sortedSensors.length})
-            </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
-              <thead>
-                <tr>
-                  <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, color: '#8A928A', fontSize: '9.5px', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid rgba(203,230,200,0.3)' }}>Sensor</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 600, color: '#8A928A', fontSize: '9.5px', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid rgba(203,230,200,0.3)' }}>Value</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 600, color: '#8A928A', fontSize: '9.5px', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid rgba(203,230,200,0.3)' }}>SQS</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'center', fontWeight: 600, color: '#8A928A', fontSize: '9.5px', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid rgba(203,230,200,0.3)' }}>Trust</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedSensors.map((s) => (
-                  <tr key={s.sensor}>
-                    <td style={{ padding: '5px 8px', borderBottom: '1px solid rgba(203,230,200,0.15)', color: '#2c3e50' }}>{formatSensorName(s.sensor)}</td>
-                    <td style={{ padding: '5px 8px', borderBottom: '1px solid rgba(203,230,200,0.15)', color: '#2c3e50', textAlign: 'right', fontWeight: 600 }}>{s.fault.toFixed(4)}</td>
-                    <td style={{ padding: '5px 8px', borderBottom: '1px solid rgba(203,230,200,0.15)', color: '#2c3e50', textAlign: 'right' }}>{s.sqs != null ? s.sqs.toFixed(2) : '--'}</td>
-                    <td style={{ padding: '5px 8px', borderBottom: '1px solid rgba(203,230,200,0.15)', color: '#2c3e50', textAlign: 'center' }}>
-                      {s.trust ? (
-                        <span style={{
-                          fontSize: '9px', fontWeight: 600, padding: '2px 6px', borderRadius: '8px',
-                          display: 'inline-block',
-                          backgroundColor: s.trust === 'Reliable' ? 'rgba(27,94,32,0.08)' : 'rgba(231,76,60,0.08)',
-                          color: s.trust === 'Reliable' ? '#1B5E20' : '#c0392b',
-                        }}>{s.trust}</span>
-                      ) : '--'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
         </motion.div>
       </motion.div>
     </AnimatePresence>,
@@ -596,25 +456,115 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
   );
 }
 
-function BetaOverviewCards() {
+function BetaOverviewCards({
+  selectedSystemName = 'Shredder',
+  fingerprints: fingerprintsProp,
+  timeseries: timeseriesProp = [],
+  timestampCol: timestampColProp = 'timestamp_utc',
+  selectedDay,
+  isLatestMode,
+  lastNHours,
+  startTime,
+  endTime,
+}) {
   const [overview, setOverview] = useState(null);
   const [subsystems, setSubsystems] = useState([]);
   const [showSystems, setShowSystems] = useState(false);
-  const [fingerprints, setFingerprints] = useState([]);
+  const fingerprints = fingerprintsProp || [];
+  const [minuteAlerts, setMinuteAlerts] = useState([]);
   const [selectedFp, setSelectedFp] = useState(null);
 
   useEffect(() => {
-    // Fetch overview and subsystems first (lightweight), then fingerprints (heavy)
-    // so the first 4 cards render quickly without being blocked by Flask's single thread.
     Promise.all([
       getBetaOverview().then(res => setOverview(res.data)).catch(() => {}),
       getBetaSubsystems().then(res => setSubsystems(res.data.subsystems || [])).catch(() => {}),
-    ]).then(() => {
-      getBetaRadarFingerprints().then(res => setFingerprints(res.data.fingerprints || [])).catch(() => {});
-    });
+    ]);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    getBetaAlerts({ alarm_view: 'minute' })
+      .then((res) => { if (!cancelled) setMinuteAlerts(res.data.alerts || []); })
+      .catch(() => { if (!cancelled) setMinuteAlerts([]); });
+    return () => { cancelled = true; };
   }, []);
 
   const nonIsolated = subsystems.filter(s => s.system_id !== 'ISOLATED');
+  const alarmFps = useMemo(
+    () => fingerprints.filter((f) => f.has_alarm && f.event_start),
+    [fingerprints]
+  );
+
+  const activeWindow = useMemo(() => {
+    if (!selectedDay) return null;
+
+    const tsCol = timestampColProp || 'timestamp_utc';
+    const rowsForDay = (timeseriesProp || []).filter((row) => {
+      const ts = row?.[tsCol];
+      return ts && String(ts).substring(0, 10) === selectedDay;
+    });
+
+    if (!rowsForDay.length) {
+      return null;
+    }
+
+    if (isLatestMode) {
+      const latest = rowsForDay[rowsForDay.length - 1]?.[tsCol];
+      if (!latest) return null;
+      const end = new Date(String(latest));
+      if (Number.isNaN(end.getTime())) return null;
+      if (lastNHours < 24) {
+        const start = new Date(end.getTime() - lastNHours * 60 * 60 * 1000);
+        return { start, end };
+      }
+      const start = new Date(`${selectedDay}T00:00:00Z`);
+      const dayEnd = new Date(`${selectedDay}T23:59:59Z`);
+      return { start, end: dayEnd };
+    }
+
+    const start = new Date(`${selectedDay}T${startTime || '00:00'}:00Z`);
+    const end = new Date(`${selectedDay}T${endTime || '23:59'}:00Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+    return start <= end ? { start, end } : { start: end, end: start };
+  }, [selectedDay, isLatestMode, lastNHours, startTime, endTime, timeseriesProp, timestampColProp]);
+
+  const hasDowntime = useMemo(() => {
+    const tsCol = timestampColProp || 'timestamp_utc';
+    const rows = timeseriesProp || [];
+    const scopedRows = !activeWindow
+      ? rows
+      : rows.filter((row) => {
+        const ts = row?.[tsCol];
+        if (!ts) return false;
+        const t = new Date(String(ts));
+        if (Number.isNaN(t.getTime())) return false;
+        return t >= activeWindow.start && t <= activeWindow.end;
+      });
+
+    return scopedRows.some((row) =>
+      Number(row?.downtime_flag || 0) === 1 ||
+      String(row?.mode || '').toUpperCase() === 'DOWNTIME'
+    );
+  }, [timeseriesProp, timestampColProp, activeWindow]);
+
+  const hasAlarms = useMemo(() => {
+    const alerts = (minuteAlerts || []).filter((a) => a.class !== 'NORMAL');
+    const scopedAlerts = !activeWindow
+      ? alerts
+      : alerts.filter((a) => {
+        const start = new Date(String(a.start_ts || a.event_start || ''));
+        const end = new Date(String(a.end_ts || a.event_end || a.start_ts || ''));
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return false;
+        return start <= activeWindow.end && end >= activeWindow.start;
+      });
+    return scopedAlerts.length > 0;
+  }, [minuteAlerts, activeWindow]);
+
+  const status = hasDowntime
+    ? { label: 'Critical', color: '#D32F2F', detail: 'Downtime detected' }
+    : hasAlarms
+      ? { label: 'Attention required', color: '#E65100', detail: 'Anomalies detected, no downtime' }
+      : { label: 'Stable', color: '#1B5E20', detail: 'No anomalies detected' };
 
   return (
     <div>
@@ -626,7 +576,7 @@ function BetaOverviewCards() {
               System Selected
               <InfoTooltip text="The industrial system currently being monitored. All sensors belong to this system." />
             </div>
-            <div style={styles.statValue}>{overview?.system_name || 'Shredder'}</div>
+            <div style={styles.statValue}>{selectedSystemName || overview?.system_name || 'Shredder'}</div>
             <div style={styles.statSub}>
               {overview?.data_range?.start && (
                 <span>{String(overview.data_range.start).substring(0, 10)} to {String(overview.data_range.end).substring(0, 10)}</span>
@@ -635,44 +585,15 @@ function BetaOverviewCards() {
           </div>
         </GlassCard>
 
-        {/* Sensors Found */}
+        {/* Status */}
         <GlassCard delay={0.1} intensity="strong" padding="0">
           <div style={styles.cardInner}>
             <div style={styles.statLabel}>
-              Sensors Found
-              <InfoTooltip text="Total unique sensor channels discovered in the dataset after pivot and cleaning." />
+              Status
+              <InfoTooltip text="Overall system status based on anomalies and downtime. Critical if downtime exists, Attention required if anomalies exist without downtime, Stable when no anomalies." />
             </div>
-            <div style={styles.statValue}>{overview?.total_sensors ?? '--'}</div>
-            <div style={styles.statSub}>active sensor channels</div>
-          </div>
-        </GlassCard>
-
-        {/* Downtime Detected */}
-        <GlassCard delay={0.15} intensity="strong" padding="0">
-          <div style={styles.cardInner}>
-            <div style={styles.statLabel}>
-              Downtime Detected
-              <InfoTooltip text="Downtime is detected when electrical signals (kW, current, voltage, frequency) fall below auto-computed thresholds. All risk scores are gated to 0 during downtime." />
-            </div>
-            <div style={styles.statValue}>
-              {overview?.downtime_pct !== undefined ? `${overview.downtime_pct}%` : '--'}
-            </div>
-            <div style={styles.statSub}>
-              {overview ? `${overview.downtime_minutes?.toLocaleString()} / ${overview.total_minutes?.toLocaleString()} min` : '--'}
-            </div>
-            <div style={{
-              marginTop: '8px', height: '6px', borderRadius: '3px', background: '#E8ECE8', overflow: 'hidden',
-            }}>
-              <div style={{
-                height: '100%', borderRadius: '3px',
-                width: `${overview?.running_pct || 0}%`,
-                background: 'linear-gradient(90deg, #81C784, #4CAF50)',
-                transition: 'width 1s ease',
-              }} />
-            </div>
-            <div style={{ fontSize: '11px', color: '#4CAF50', marginTop: '4px', fontWeight: 500 }}>
-              {overview?.running_pct ?? '--'}% running
-            </div>
+            <div style={{ ...styles.statValue, color: status.color }}>{status.label}</div>
+            <div style={styles.statSub}>{status.detail}</div>
           </div>
         </GlassCard>
 
@@ -684,11 +605,6 @@ function BetaOverviewCards() {
             <InfoTooltip text="Subsystems discovered via hierarchical correlation clustering. Each groups sensors with correlated behavior. Isolated sensors don't cluster with any group." />
           </div>
           <div style={styles.statValue}>{nonIsolated.length || '--'}</div>
-          <div style={styles.statSub}>
-            {subsystems.find(s => s.system_id === 'ISOLATED')
-              ? `+ ${subsystems.find(s => s.system_id === 'ISOLATED').sensor_count} isolated`
-              : ''}
-          </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '8px' }}>
             {nonIsolated.map((sys, idx) => (
               <span key={sys.system_id} style={{
@@ -717,20 +633,19 @@ function BetaOverviewCards() {
           </div>
         </GlassCard>
 
-        {/* Peak Alarms */}
+        {/* Peak Anomalys */}
         <GlassCard delay={0.25} intensity="strong" padding="0">
           <div style={styles.cardInner}>
             <div style={styles.statLabel}>
-              Peak Alarms
-              <InfoTooltip text="Summary of peak alarm events detected per subsystem. Each entry shows the highest-risk event window identified by the autoencoder fault fingerprint analysis." />
+              Peak Anomalys
+              <InfoTooltip text="Summary of peak anomaly events detected per subsystem. Each entry shows the highest-risk event window identified by the autoencoder fault fingerprint analysis." />
             </div>
             {(() => {
-              const alarmFps = fingerprints.filter(f => f.has_alarm && f.event_start);
               if (!alarmFps.length) {
                 return (
                   <>
                     <div style={styles.statValue}>0</div>
-                    <div style={styles.statSub}>No peak alarm events</div>
+                    <div style={styles.statSub}>No peak anomaly events</div>
                   </>
                 );
               }

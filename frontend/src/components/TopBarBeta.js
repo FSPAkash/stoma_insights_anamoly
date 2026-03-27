@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { motion } from 'framer-motion';
-import AnalogClock from './AnalogClock';
 import InfoTooltip from './InfoTooltip';
 
 const LOGO_SRC = '/stoma.png';
@@ -60,32 +59,7 @@ const styles = {
   right: {
     display: 'flex',
     alignItems: 'center',
-    gap: '24px',
-  },
-  clockWrap: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-  },
-  timeContainer: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-  },
-  timeText: {
-    fontSize: '15px',
-    fontWeight: 500,
-    color: '#4A524A',
-    fontVariantNumeric: 'tabular-nums',
-  },
-  utcLabel: {
-    fontSize: '10px',
-    fontWeight: 600,
-    color: '#1B5E20',
-    background: 'rgba(27, 94, 32, 0.1)',
-    padding: '2px 5px',
-    borderRadius: '3px',
-    letterSpacing: '0.5px',
+    gap: '16px',
   },
   userWrap: {
     display: 'flex',
@@ -135,31 +109,7 @@ const styles = {
   },
 };
 
-function getUTCDate(date) {
-  return new Date(
-    date.getUTCFullYear(),
-    date.getUTCMonth(),
-    date.getUTCDate(),
-    date.getUTCHours(),
-    date.getUTCMinutes(),
-    date.getUTCSeconds()
-  );
-}
-
 function TopBarBeta({ user, onLogout }) {
-  const [time, setTime] = useState(new Date());
-
-  useEffect(() => {
-    const timer = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const utcTime = getUTCDate(time);
-  const utcTimeString = time.toLocaleTimeString('en-US', {
-    hour12: false,
-    timeZone: 'UTC',
-  });
-
   return (
     <>
       <style>{keyframesStyle}</style>
@@ -179,17 +129,10 @@ function TopBarBeta({ user, onLogout }) {
             </div>
           </div>
           <div style={styles.divider} />
-          <span style={styles.pageTitle}>Anomaly Detection Dashboard</span>
+          <span style={styles.pageTitle}>System Anomaly Intelligence</span>
           <InfoTooltip text="Sensors are grouped into subsystems via correlation clustering, scored independently, and fused into a unified risk score. SQS tracks signal quality, downtime is auto-detected from electrical signals, and alerts are classified by dominant subsystem." />
         </div>
         <div style={styles.right}>
-          <div style={styles.clockWrap}>
-            <AnalogClock size={36} time={utcTime} />
-            <div style={styles.timeContainer}>
-              <span style={styles.timeText}>{utcTimeString}</span>
-              <span style={styles.utcLabel}>UTC</span>
-            </div>
-          </div>
           <div style={styles.userWrap}>
             <div style={styles.avatar}>{user ? user.charAt(0).toUpperCase() : 'U'}</div>
             <span style={styles.userName}>{user}</span>

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from datetime import datetime
 from flask import Flask, jsonify, request, send_from_directory
 from flask.json.provider import DefaultJSONProvider
@@ -13,17 +14,36 @@ import pandas as pd
 import requests as http_requests
 
 
+class SafeJSONEncoder(json.JSONEncoder):
+    """Fast JSON encoder that converts NaN/Inf to null without recursive pre-walk."""
+    def default(self, o):
+        return super().default(o)
+
+    def iterencode(self, o, _one_shot=False):
+        # Use the parent iterencode but with a custom float handler
+        return super().iterencode(o, _one_shot=_one_shot)
+
+
 class SafeJSONProvider(DefaultJSONProvider):
     def dumps(self, obj, **kwargs):
-        return json.dumps(self._sanitize(obj), **kwargs)
+        kwargs.setdefault("default", self.default)
+        kwargs.setdefault("ensure_ascii", self.ensure_ascii)
+        kwargs.setdefault("sort_keys", self.sort_keys)
+        kwargs.setdefault("allow_nan", False)
+        try:
+            return json.dumps(obj, **kwargs)
+        except ValueError:
+            # Fallback: only triggered if NaN/Inf sneak through unsanitized
+            return json.dumps(self._sanitize(obj), **kwargs)
 
-    def _sanitize(self, o):
+    @staticmethod
+    def _sanitize(o):
         if isinstance(o, float) and (math.isnan(o) or math.isinf(o)):
             return None
         if isinstance(o, dict):
-            return {k: self._sanitize(v) for k, v in o.items()}
+            return {k: SafeJSONProvider._sanitize(v) for k, v in o.items()}
         if isinstance(o, list):
-            return [self._sanitize(v) for v in o]
+            return [SafeJSONProvider._sanitize(v) for v in o]
         return o
 
 
@@ -42,6 +62,8 @@ _csv_cache = {}
 _csv_ts_cache = {}
 _beta_csv_cache = {}
 _beta_csv_ts_cache = {}
+_beta_csv_mtime = {}  # track file modification times for cache invalidation
+_beta_alert_tables_cache = {}
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "")  # e.g. "username/repo"
@@ -84,19 +106,41 @@ TIMESTAMP_CANDIDATES = [
 ]
 
 
+def safe_to_datetime(values, errors="coerce", utc=None):
+    """
+    Parse datetimes without noisy per-element inference warnings.
+    Prefers pandas 'mixed' parsing when available, then falls back.
+    """
+    kwargs = {"errors": errors}
+    if utc is not None:
+        kwargs["utc"] = utc
+    try:
+        return pd.to_datetime(values, format="mixed", **kwargs)
+    except (TypeError, ValueError):
+        # Older pandas or incompatible args: silence inference warning on fallback.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Could not infer format, so each element will be parsed individually.*",
+                category=UserWarning,
+            )
+            return pd.to_datetime(values, **kwargs)
+
+
 def find_timestamp_col(df):
     for candidate in TIMESTAMP_CANDIDATES:
         if candidate in df.columns:
             return candidate
+    # Check index name before fuzzy column keyword search
+    if df.index.name and df.index.name.lower().strip() in ["timestamp_utc", "timestamp", "time", "datetime", "ts"]:
+        return "__index__"
     for col in df.columns:
         col_lower = col.lower().strip()
         if any(kw in col_lower for kw in ["time", "date", "ts", "timestamp"]):
             return col
-    if df.index.name and df.index.name.lower().strip() in ["timestamp_utc", "timestamp", "time", "datetime", "ts"]:
-        return "__index__"
     if not isinstance(df.index, pd.RangeIndex):
         try:
-            test = pd.to_datetime(df.index[:5], errors="coerce")
+            test = safe_to_datetime(df.index[:5], errors="coerce")
             if test.notna().sum() >= 3:
                 return "__index__"
         except Exception:
@@ -106,7 +150,7 @@ def find_timestamp_col(df):
             sample = df[col].dropna().head(10)
             if len(sample) == 0:
                 continue
-            parsed = pd.to_datetime(sample, errors="coerce")
+            parsed = safe_to_datetime(sample, errors="coerce")
             if parsed.notna().sum() >= max(1, len(sample) * 0.7):
                 return col
         except Exception:
@@ -148,10 +192,10 @@ def load_csv_with_ts(filename):
 
         if ts_col and ts_col in df.columns:
             try:
-                df[ts_col] = pd.to_datetime(df[ts_col], errors="coerce", utc=True)
+                df[ts_col] = safe_to_datetime(df[ts_col], errors="coerce", utc=True)
             except Exception:
                 try:
-                    df[ts_col] = pd.to_datetime(df[ts_col], errors="coerce")
+                    df[ts_col] = safe_to_datetime(df[ts_col], errors="coerce")
                 except Exception:
                     pass
 
@@ -159,16 +203,16 @@ def load_csv_with_ts(filename):
             try:
                 df_retry = pd.read_csv(path, index_col=0)
                 if not isinstance(df_retry.index, pd.RangeIndex):
-                    test_parsed = pd.to_datetime(df_retry.index[:5], errors="coerce")
+                    test_parsed = safe_to_datetime(df_retry.index[:5], errors="coerce")
                     if test_parsed.notna().sum() >= 3:
                         df_retry.index.name = df_retry.index.name or "timestamp_utc"
                         idx_name = df_retry.index.name
                         df_retry = df_retry.reset_index()
                         ts_col = idx_name
                         try:
-                            df_retry[ts_col] = pd.to_datetime(df_retry[ts_col], errors="coerce", utc=True)
+                            df_retry[ts_col] = safe_to_datetime(df_retry[ts_col], errors="coerce", utc=True)
                         except Exception:
-                            df_retry[ts_col] = pd.to_datetime(df_retry[ts_col], errors="coerce")
+                            df_retry[ts_col] = safe_to_datetime(df_retry[ts_col], errors="coerce")
                         df = df_retry
             except Exception:
                 pass
@@ -190,13 +234,18 @@ def sanitize_val(x):
 
 
 def sanitize_df(df):
+    """Vectorized NaN/Inf sanitization -- replaces row-by-row apply."""
+    import numpy as np
     df = df.copy()
-    for col in df.columns:
-        if df[col].dtype in ["float64", "float32"]:
-            df[col] = df[col].astype(object)
-            df[col] = df[col].apply(sanitize_val)
-        elif df[col].dtype == "datetime64[ns, UTC]" or df[col].dtype == "datetime64[ns]":
-            df[col] = df[col].astype(str).replace("NaT", None)
+    # Replace inf/-inf with NaN, then NaN with None via where
+    float_cols = df.select_dtypes(include=["float64", "float32"]).columns
+    if len(float_cols):
+        df[float_cols] = df[float_cols].replace([np.inf, -np.inf], np.nan)
+    # Handle datetime columns
+    dt_cols = df.select_dtypes(include=["datetime64", "datetimetz"]).columns
+    for col in dt_cols:
+        df[col] = df[col].astype(str).replace("NaT", None)
+    # Convert all remaining NaN to None (needed for JSON serialization)
     df = df.where(pd.notnull(df), None)
     return df
 
@@ -424,9 +473,9 @@ def get_risk_decomposition_for_episode():
 
     if "timestamp_utc" in df.columns:
         try:
-            df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], errors="coerce", utc=True)
-            start_dt = pd.to_datetime(start_ts, utc=True)
-            end_dt = pd.to_datetime(end_ts, utc=True)
+            df["timestamp_utc"] = safe_to_datetime(df["timestamp_utc"], errors="coerce", utc=True)
+            start_dt = safe_to_datetime(start_ts, utc=True)
+            end_dt = safe_to_datetime(end_ts, utc=True)
             df = df[(df["timestamp_utc"] >= start_dt) & (df["timestamp_utc"] <= end_dt)]
         except Exception:
             df["timestamp_utc"] = df["timestamp_utc"].astype(str)
@@ -564,7 +613,7 @@ def get_system_sensor_values(system_id):
     if not scores_df.empty and "mode" in scores_df.columns and scores_ts:
         dt_mask = scores_df["mode"] == "DOWNTIME"
         if dt_mask.any():
-            dt_times = pd.to_datetime(scores_df.loc[dt_mask, scores_ts])
+            dt_times = safe_to_datetime(scores_df.loc[dt_mask, scores_ts], errors="coerce")
             dt_times = dt_times.sort_values().reset_index(drop=True)
             merge_gap = pd.Timedelta(minutes=15)
             span_start = dt_times.iloc[0]
@@ -833,63 +882,109 @@ def submit_feedback():
 # BETA API ENDPOINTS — reads exclusively from BETA_DATA_DIR
 # =============================================================================
 
+def _beta_resolve_path(filename):
+    """Return the actual file path (parquet preferred, CSV fallback)."""
+    if filename.endswith(".csv"):
+        pq = os.path.join(BETA_DATA_DIR, filename.rsplit(".", 1)[0] + ".parquet")
+        if os.path.exists(pq):
+            return pq
+    csv = os.path.join(BETA_DATA_DIR, filename)
+    if os.path.exists(csv):
+        return csv
+    return None
+
+
+def _beta_cache_is_stale(filename):
+    """Check if the cached file has been modified on disk."""
+    path = _beta_resolve_path(filename)
+    if path is None:
+        return True
+    current_mtime = os.path.getmtime(path)
+    return _beta_csv_mtime.get(filename) != current_mtime
+
+
+def _beta_update_mtime(filename):
+    path = _beta_resolve_path(filename)
+    if path:
+        _beta_csv_mtime[filename] = os.path.getmtime(path)
+
+
 def beta_load_csv(filename):
-    if filename in _beta_csv_cache:
+    if filename in _beta_csv_cache and not _beta_cache_is_stale(filename):
         return _beta_csv_cache[filename]
-    path = os.path.join(BETA_DATA_DIR, filename)
-    if os.path.exists(path):
-        try:
-            df = pd.read_csv(path)
+    # Prefer parquet for faster loads and smaller memory footprint
+    parquet_name = filename.rsplit(".", 1)[0] + ".parquet" if filename.endswith(".csv") else None
+    parquet_path = os.path.join(BETA_DATA_DIR, parquet_name) if parquet_name else None
+    csv_path = os.path.join(BETA_DATA_DIR, filename)
+    try:
+        if parquet_path and os.path.exists(parquet_path):
+            df = pd.read_parquet(parquet_path)
             _beta_csv_cache[filename] = df
+            _beta_update_mtime(filename)
             return df
-        except Exception as e:
-            print(f"Error loading beta {filename}: {e}")
+        if os.path.exists(csv_path):
+            df = pd.read_csv(csv_path)
+            _beta_csv_cache[filename] = df
+            _beta_update_mtime(filename)
+            return df
+    except Exception as e:
+        print(f"Error loading beta {filename}: {e}")
     return pd.DataFrame()
 
 
 def beta_load_csv_with_ts(filename):
-    if filename in _beta_csv_ts_cache:
+    if filename in _beta_csv_ts_cache and not _beta_cache_is_stale(filename):
         return _beta_csv_ts_cache[filename]
-    path = os.path.join(BETA_DATA_DIR, filename)
-    if os.path.exists(path):
-        try:
-            df = pd.read_csv(path)
-            ts_col = find_timestamp_col(df)
-            if ts_col == "__index__":
-                df = pd.read_csv(path, index_col=0)
-                df.index.name = df.index.name or "timestamp_utc"
-                idx_name = df.index.name
-                df = df.reset_index()
-                ts_col = idx_name if idx_name in df.columns else df.columns[0]
-            if ts_col and ts_col in df.columns:
+    # Prefer parquet for faster loads
+    parquet_name = filename.rsplit(".", 1)[0] + ".parquet" if filename.endswith(".csv") else None
+    parquet_path = os.path.join(BETA_DATA_DIR, parquet_name) if parquet_name else None
+    csv_path = os.path.join(BETA_DATA_DIR, filename)
+    try:
+        if parquet_path and os.path.exists(parquet_path):
+            df = pd.read_parquet(parquet_path)
+        elif os.path.exists(csv_path):
+            df = pd.read_csv(csv_path)
+        else:
+            return pd.DataFrame(), None
+        ts_col = find_timestamp_col(df)
+        if ts_col == "__index__":
+            # Re-read CSV with index if parquet didn't have it
+            if not (parquet_path and os.path.exists(parquet_path)):
+                df = pd.read_csv(csv_path, index_col=0)
+            df.index.name = df.index.name or "timestamp_utc"
+            idx_name = df.index.name
+            df = df.reset_index()
+            ts_col = idx_name if idx_name in df.columns else df.columns[0]
+        if ts_col and ts_col in df.columns:
+            try:
+                df[ts_col] = safe_to_datetime(df[ts_col], errors="coerce", utc=True)
+            except Exception:
                 try:
-                    df[ts_col] = pd.to_datetime(df[ts_col], errors="coerce", utc=True)
-                except Exception:
-                    try:
-                        df[ts_col] = pd.to_datetime(df[ts_col], errors="coerce")
-                    except Exception:
-                        pass
-            if ts_col is None:
-                try:
-                    df_retry = pd.read_csv(path, index_col=0)
-                    if not isinstance(df_retry.index, pd.RangeIndex):
-                        test_parsed = pd.to_datetime(df_retry.index[:5], errors="coerce")
-                        if test_parsed.notna().sum() >= 3:
-                            df_retry.index.name = df_retry.index.name or "timestamp_utc"
-                            idx_name = df_retry.index.name
-                            df_retry = df_retry.reset_index()
-                            ts_col = idx_name
-                            try:
-                                df_retry[ts_col] = pd.to_datetime(df_retry[ts_col], errors="coerce", utc=True)
-                            except Exception:
-                                df_retry[ts_col] = pd.to_datetime(df_retry[ts_col], errors="coerce")
-                            df = df_retry
+                    df[ts_col] = safe_to_datetime(df[ts_col], errors="coerce")
                 except Exception:
                     pass
-            _beta_csv_ts_cache[filename] = (df, ts_col)
-            return df, ts_col
-        except Exception as e:
-            print(f"Error loading beta {filename}: {e}")
+        if ts_col is None:
+            try:
+                df_retry = pd.read_csv(csv_path, index_col=0)
+                if not isinstance(df_retry.index, pd.RangeIndex):
+                    test_parsed = safe_to_datetime(df_retry.index[:5], errors="coerce")
+                    if test_parsed.notna().sum() >= 3:
+                        df_retry.index.name = df_retry.index.name or "timestamp_utc"
+                        idx_name = df_retry.index.name
+                        df_retry = df_retry.reset_index()
+                        ts_col = idx_name
+                        try:
+                            df_retry[ts_col] = safe_to_datetime(df_retry[ts_col], errors="coerce", utc=True)
+                        except Exception:
+                            df_retry[ts_col] = safe_to_datetime(df_retry[ts_col], errors="coerce")
+                        df = df_retry
+            except Exception:
+                pass
+        _beta_csv_ts_cache[filename] = (df, ts_col)
+        _beta_update_mtime(filename)
+        return df, ts_col
+    except Exception as e:
+        print(f"Error loading beta {filename}: {e}")
     return pd.DataFrame(), None
 
 
@@ -1171,12 +1266,12 @@ def _beta_build_span_alert_tables():
         return minute_alerts.copy(), minute_sensors.copy()
 
     alerts = minute_alerts.copy()
-    alerts["_ts_dt"] = pd.to_datetime(alerts["start_ts"], errors="coerce", utc=True)
+    alerts["_ts_dt"] = safe_to_datetime(alerts["start_ts"], errors="coerce", utc=True)
     alerts = alerts.dropna(subset=["_ts_dt"]).sort_values(["class", "_ts_dt"]).reset_index(drop=True)
 
     sensors = minute_sensors.copy()
     if not sensors.empty:
-        sensors["_ts_dt"] = pd.to_datetime(sensors["start_ts"], errors="coerce", utc=True)
+        sensors["_ts_dt"] = safe_to_datetime(sensors["start_ts"], errors="coerce", utc=True)
         sensors = sensors.dropna(subset=["_ts_dt"]).sort_values(["class", "_ts_dt", "sensor"]).reset_index(drop=True)
 
     span_alert_rows = []
@@ -1368,14 +1463,53 @@ def _beta_get_alarm_view():
     return "span" if alarm_view == "span" else "minute"
 
 
+def _beta_alert_cache_dependencies():
+    return [
+        "detailed_subsystem_alarms.csv",
+        "detailed_sensor_rankings.csv",
+        "detailed_system_sensor_scores.csv",
+        "detailed_sensor_trust.csv",
+    ]
+
+
+def _beta_alert_cache_payload_stale(cached_entry):
+    dep_mtimes = (cached_entry or {}).get("dep_mtimes", {})
+    if not dep_mtimes:
+        return True
+    for dep, cached_mtime in dep_mtimes.items():
+        path = _beta_resolve_path(dep)
+        if path is None:
+            return True
+        if os.path.getmtime(path) != cached_mtime:
+            return True
+    return False
+
+
 def _beta_build_alert_tables_for_view(alarm_view):
+    cached = _beta_alert_tables_cache.get(alarm_view)
+    if cached and not _beta_alert_cache_payload_stale(cached):
+        return cached["alerts"].copy(), cached["sensors"].copy()
+
     if alarm_view == "span":
-        return _beta_build_span_alert_tables()
-    return _beta_build_timestamp_alert_tables()
+        alerts_df, sensors_df = _beta_build_span_alert_tables()
+    else:
+        alerts_df, sensors_df = _beta_build_timestamp_alert_tables()
+
+    dep_mtimes = {}
+    for dep in _beta_alert_cache_dependencies():
+        path = _beta_resolve_path(dep)
+        if path is not None:
+            dep_mtimes[dep] = os.path.getmtime(path)
+    _beta_alert_tables_cache[alarm_view] = {
+        "alerts": alerts_df.copy(),
+        "sensors": sensors_df.copy(),
+        "dep_mtimes": dep_mtimes,
+    }
+    return alerts_df, sensors_df
 
 
-# Pre-load beta CSV files into cache at import time (works with gunicorn)
-print("Pre-loading beta CSV files into cache...")
+# Pre-load beta data files into cache at import time (prefers parquet, falls back to CSV)
+print("Pre-loading beta data files into cache...")
 for _pf in ["dynamic_catalog.csv", "dynamic_weights.csv", "sensor_config.csv",
             "df_chart_data.csv", "alerts.csv", "alerts_sensor_level.csv",
             "detailed_sqs.csv", "detailed_engine_a.csv",
@@ -1383,7 +1517,13 @@ for _pf in ["dynamic_catalog.csv", "dynamic_weights.csv", "sensor_config.csv",
             "detailed_subsystem_alarms.csv"]:
     beta_load_csv(_pf)
     beta_load_csv_with_ts(_pf)
-print("Beta CSV pre-load complete.")
+try:
+    _beta_build_alert_tables_for_view("minute")
+    _beta_build_alert_tables_for_view("span")
+    print("Beta alert table cache warm complete.")
+except Exception as _warm_err:
+    print(f"Beta alert cache warm skipped: {_warm_err}")
+print("Beta data pre-load complete.")
 
 
 @app.route("/api/beta/login", methods=["POST"])
@@ -1624,12 +1764,12 @@ def beta_sensor_quality(system_id):
 
         # Time-range filter (before downsample)
         if (start_ts or end_ts) and "ts" in combined.columns:
-            ts_parsed = pd.to_datetime(combined["ts"], errors="coerce")
+            ts_parsed = safe_to_datetime(combined["ts"], errors="coerce")
             mask = pd.Series(True, index=combined.index)
             if start_ts:
-                mask &= ts_parsed >= pd.to_datetime(start_ts)
+                mask &= ts_parsed >= safe_to_datetime(start_ts)
             if end_ts:
-                mask &= ts_parsed <= pd.to_datetime(end_ts)
+                mask &= ts_parsed <= safe_to_datetime(end_ts)
             combined = combined.loc[mask].reset_index(drop=True)
 
         # Downsample
@@ -1646,7 +1786,7 @@ def beta_sensor_quality(system_id):
     if not alarms_df.empty and "downtime_flag" in alarms_df.columns and alarms_ts:
         dt_mask = alarms_df["downtime_flag"] == 1
         if dt_mask.any():
-            dt_times = pd.to_datetime(alarms_df.loc[dt_mask, alarms_ts])
+            dt_times = safe_to_datetime(alarms_df.loc[dt_mask, alarms_ts], errors="coerce")
             dt_times = dt_times.sort_values().reset_index(drop=True)
             merge_gap = pd.Timedelta(minutes=15)
             span_start = dt_times.iloc[0]
@@ -1676,12 +1816,12 @@ def beta_sensor_quality(system_id):
             sub_combined["adaptive_threshold"] = sub_df[thresh_col].round(6).values
         # Time-range filter
         if (start_ts or end_ts) and "ts" in sub_combined.columns:
-            ts_parsed = pd.to_datetime(sub_combined["ts"], errors="coerce")
+            ts_parsed = safe_to_datetime(sub_combined["ts"], errors="coerce")
             mask = pd.Series(True, index=sub_combined.index)
             if start_ts:
-                mask &= ts_parsed >= pd.to_datetime(start_ts)
+                mask &= ts_parsed >= safe_to_datetime(start_ts)
             if end_ts:
-                mask &= ts_parsed <= pd.to_datetime(end_ts)
+                mask &= ts_parsed <= safe_to_datetime(end_ts)
             sub_combined = sub_combined.loc[mask].reset_index(drop=True)
         if downsample > 1:
             sub_combined = sub_combined.iloc[::downsample]
@@ -1770,7 +1910,7 @@ def beta_subsystem_behavior(system_id):
     if not alarms_df.empty and "downtime_flag" in alarms_df.columns and alarms_ts:
         dt_mask = alarms_df["downtime_flag"] == 1
         if dt_mask.any():
-            dt_times = pd.to_datetime(alarms_df.loc[dt_mask, alarms_ts])
+            dt_times = safe_to_datetime(alarms_df.loc[dt_mask, alarms_ts], errors="coerce")
             dt_times = dt_times.sort_values().reset_index(drop=True)
             merge_gap = pd.Timedelta(minutes=15)
             span_start = dt_times.iloc[0]
@@ -1856,11 +1996,14 @@ def beta_ae_metadata():
 @app.route("/api/beta/alerts", methods=["GET"])
 def beta_alerts():
     alarm_view = _beta_get_alarm_view()
+    class_filter = request.args.get("class", default=None, type=str)
     df, _ = _beta_build_alert_tables_for_view(alarm_view)
     if df.empty:
         return jsonify({"alerts": [], "summary": {}})
     if "class" in df.columns:
         df = df[df["class"] != "NORMAL"]
+        if class_filter:
+            df = df[df["class"] == class_filter]
     df = sanitize_df(df)
     if alarm_view == "span":
         high_count = int((pd.to_numeric(df["high_count"], errors="coerce").fillna(0) > 0).sum()) if "high_count" in df.columns else 0
@@ -2282,9 +2425,9 @@ def beta_risk_decomposition_episode():
         return jsonify({"decomposition": [], "flow_data": {}})
     if "timestamp_utc" in df.columns:
         try:
-            df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], errors="coerce", utc=True)
-            start_dt = pd.to_datetime(start_ts, utc=True)
-            end_dt = pd.to_datetime(end_ts, utc=True)
+            df["timestamp_utc"] = safe_to_datetime(df["timestamp_utc"], errors="coerce", utc=True)
+            start_dt = safe_to_datetime(start_ts, utc=True)
+            end_dt = safe_to_datetime(end_ts, utc=True)
             df = df[(df["timestamp_utc"] >= start_dt) & (df["timestamp_utc"] <= end_dt)]
         except Exception:
             df["timestamp_utc"] = df["timestamp_utc"].astype(str)
@@ -2340,8 +2483,8 @@ if __name__ == "__main__":
         else:
             print(f"  [MISSING] {fname}")
 
-    # Pre-load beta CSV files into cache at startup to avoid slow first requests
-    print("Pre-loading beta CSV files...")
+    # Pre-load beta data files into cache at startup to avoid slow first requests
+    print("Pre-loading beta data files...")
     for bfname in ["dynamic_catalog.csv", "dynamic_weights.csv", "sensor_config.csv",
                     "df_chart_data.csv", "alerts.csv", "alerts_sensor_level.csv",
                     "detailed_sqs.csv", "detailed_engine_a.csv",
@@ -2349,7 +2492,7 @@ if __name__ == "__main__":
                     "detailed_subsystem_alarms.csv"]:
         beta_load_csv(bfname)
         beta_load_csv_with_ts(bfname)
-    print("Beta CSV pre-load complete.")
+    print("Beta data pre-load complete.")
 
     backend_host = os.environ.get("HOST", "0.0.0.0")
     backend_port = int(os.environ.get("PORT", "5000"))

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   getBetaAlertsSensorLevel,
+  getBetaAlerts,
   getBetaRiskDecompositionForEpisode,
 } from '../utils/api';
 import {
@@ -182,8 +183,18 @@ const classStyleMap = {
   INSTRUMENT: { bg: '#E3F2FD', text: '#0D47A1' },
 };
 
+const parseUtcMs = (value) => {
+  if (value == null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const ms = Date.parse(normalized);
+  return Number.isNaN(ms) ? null : ms;
+};
+
 function BetaAlertDetailModal({ alert, onClose }) {
   const [sensorAlerts, setSensorAlerts] = useState([]);
+  const [minuteAlerts, setMinuteAlerts] = useState([]);
   const [flowData, setFlowData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -197,13 +208,22 @@ function BetaAlertDetailModal({ alert, onClose }) {
         class: alert.class,
         alarm_view: alert.view_type || 'minute',
       }),
+      getBetaAlerts({
+        alarm_view: 'minute',
+        class: alert.class,
+      }),
       getBetaRiskDecompositionForEpisode(alert.start_ts, alert.end_ts),
     ])
-      .then(([sensorRes, decompRes]) => {
+      .then(([sensorRes, minuteRes, decompRes]) => {
         if (sensorRes.status === 'fulfilled') {
           setSensorAlerts(sensorRes.value.data.sensor_alerts || []);
         } else {
           setSensorAlerts([]);
+        }
+        if (minuteRes.status === 'fulfilled') {
+          setMinuteAlerts(minuteRes.value.data.alerts || []);
+        } else {
+          setMinuteAlerts([]);
         }
         if (decompRes.status === 'fulfilled') {
           setFlowData(decompRes.value.data.flow_data || {});
@@ -240,6 +260,28 @@ function BetaAlertDetailModal({ alert, onClose }) {
     alert.medium_count ? `${alert.medium_count} medium` : null,
     alert.low_count ? `${alert.low_count} low` : null,
   ].filter(Boolean).join(', ');
+  const spanMeanContributionDenom = useMemo(() => {
+    if (!isSpanView || !sensorAlerts.length) return 0;
+    return sensorAlerts.reduce((sum, row) => sum + (Number(row.sensor_mean_score) || 0), 0);
+  }, [isSpanView, sensorAlerts]);
+  const minuteRowsInSpan = useMemo(() => {
+    if (!isSpanView || !minuteAlerts.length) return [];
+    const spanStart = parseUtcMs(alert.start_ts || alert.event_start);
+    const spanEnd = parseUtcMs(alert.end_ts || alert.event_end || alert.start_ts || alert.event_start);
+    if (spanStart == null || spanEnd == null) return [];
+    return minuteAlerts
+      .filter((row) => row.class === alert.class && row.class !== 'NORMAL')
+      .filter((row) => {
+        const rowStart = parseUtcMs(row.start_ts || row.event_start);
+        const rowEnd = parseUtcMs(row.end_ts || row.event_end || row.start_ts || row.event_start);
+        return rowStart != null && rowEnd != null && rowStart <= spanEnd && rowEnd >= spanStart;
+      })
+      .sort((a, b) => {
+        const aTs = String(a.start_ts || a.event_start || '');
+        const bTs = String(b.start_ts || b.event_start || '');
+        return aTs.localeCompare(bTs);
+      });
+  }, [isSpanView, minuteAlerts, alert]);
 
   return (
     <AnimatePresence>
@@ -261,10 +303,10 @@ function BetaAlertDetailModal({ alert, onClose }) {
           <div style={styles.header}>
             <div style={styles.titleArea}>
               <div style={styles.title}>
-                {currentView === 'span' ? 'System Alarm Span Detail' : 'System Alarm Detail'}
+                {currentView === 'span' ? 'System Anomaly Span Detail' : 'System Anomaly Detail'}
                 <InfoTooltip text={currentView === 'span'
-                  ? 'This detail view summarizes the selected dynamic alarm span, including how many minute-level alerts it contains, the severity mix inside the span, and the aggregated sensor contributions across that span.'
-                  : 'This detail view summarizes the selected system alarm row. Risk values are subsystem-level scores for that minute, while sensor contribution values show relative sensor influence and do not sum to the risk score.'} />
+                  ? 'This detail view summarizes the selected dynamic anomaly span, including how many minute-level anomalies it contains, the severity mix inside the span, and the aggregated sensor contributions across that span.'
+                  : 'This detail view summarizes the selected system anomaly row. Risk values are subsystem-level scores for that minute, while sensor contribution values show relative sensor influence and do not sum to the risk score.'} />
               </div>
               <div style={styles.subtitle}>
                 {displayWindow}
@@ -294,7 +336,7 @@ function BetaAlertDetailModal({ alert, onClose }) {
               color={alert.severity === 'HIGH' ? '#EF5350' : alert.severity === 'MEDIUM' ? '#FFA726' : '#4CAF50'}
               size={130}
               sublabel={alert.adaptive_threshold != null ? `Threshold: ${Number(alert.adaptive_threshold).toFixed(3)}` : undefined}
-              tooltip="Normalized risk score (0-1) used by the alarm system. The alarm fires when this exceeds the adaptive threshold."
+              tooltip="Normalized risk score (0-1) used by the anomaly system. The anomaly fires when this exceeds the adaptive threshold."
             />
 
             {/* Stats grid below gauge */}
@@ -303,7 +345,7 @@ function BetaAlertDetailModal({ alert, onClose }) {
               {alert.system_confidence != null && (
                 <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
                   <div style={styles.metaLabel}>
-                    Confidence <InfoTooltip text="System confidence in the anomaly detection model at the time of this alarm." />
+                    Confidence <InfoTooltip text="System confidence in the anomaly detection model at the time of this anomaly." />
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}>
                     <div style={{ flex: 1, height: '6px', background: '#E8ECE8', borderRadius: '3px', overflow: 'hidden', maxWidth: '60px' }}>
@@ -318,43 +360,6 @@ function BetaAlertDetailModal({ alert, onClose }) {
                   </div>
                 </div>
               )}
-              {alert.avg_sqs != null && (
-                <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
-                  <div style={styles.metaLabel}>
-                    Signal Quality <InfoTooltip text="Sensor Quality Score (SQS) measures raw signal data validity. A score of 100% means all sensor readings passed quality checks. This is independent of anomaly detection." />
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}>
-                    <div style={{ flex: 1, height: '6px', background: '#E8ECE8', borderRadius: '3px', overflow: 'hidden', maxWidth: '60px' }}>
-                      <div style={{
-                        width: `${(alert.avg_sqs || 0) * 100}%`,
-                        height: '100%',
-                        background: alert.avg_sqs >= 0.8 ? '#2196F3' : alert.avg_sqs >= 0.5 ? '#FFA726' : '#EF5350',
-                        borderRadius: '3px',
-                      }} />
-                    </div>
-                    <span style={styles.metaValue}>{((alert.avg_sqs || 0) * 100).toFixed(0)}%</span>
-                  </div>
-                </div>
-              )}
-              {(alert.reliable_count > 0 || alert.degraded_count > 0) && (
-                <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
-                  <div style={styles.metaLabel}>
-                    Behavior <InfoTooltip text="Derived from autoencoder reconstruction error. 'Degraded' means the sensor's behavior pattern deviates from learned normal -- even if the raw signal quality (SQS) is perfect." />
-                  </div>
-                  <div style={{ display: 'flex', gap: '4px', justifyContent: 'center', marginTop: '2px', flexWrap: 'wrap' }}>
-                    {alert.reliable_count > 0 && (
-                      <span style={{ fontSize: '11px', fontWeight: 600, padding: '2px 6px', borderRadius: '10px', background: '#E8F5E9', color: '#2E7D32', whiteSpace: 'nowrap' }}>
-                        {alert.reliable_count} Reliable
-                      </span>
-                    )}
-                    {alert.degraded_count > 0 && (
-                      <span style={{ fontSize: '11px', fontWeight: 600, padding: '2px 6px', borderRadius: '10px', background: '#FFF3E0', color: '#E65100', whiteSpace: 'nowrap' }}>
-                        {alert.degraded_count} Degraded
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
             {/* Row 2: Alarm Metadata */}
             <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '8px', width: '100%' }}>
@@ -365,7 +370,7 @@ function BetaAlertDetailModal({ alert, onClose }) {
               {currentView === 'span' && (
                 <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
                   <div style={styles.metaLabel}>Alerts</div>
-                  <div style={styles.metaValue}>{alert.minute_count || 1}</div>
+                  <div style={styles.metaValue}>{minuteRowsInSpan.length}</div>
                 </div>
               )}
               <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
@@ -386,7 +391,6 @@ function BetaAlertDetailModal({ alert, onClose }) {
             const topSensor = sensorAlerts.slice().sort((a, b) => (a.sensor_rank || 99) - (b.sensor_rank || 99))[0];
             if (!topSensor) return null;
             const pct = topSensor.sensor_contribution_pct;
-            const totalMin = (topSensor.sensor_normal_minutes || 0) + (topSensor.sensor_anomalous_minutes || 0);
             return (
               <div style={{
                 background: 'linear-gradient(135deg, rgba(27,94,32,0.06) 0%, rgba(76,175,80,0.04) 100%)',
@@ -419,28 +423,10 @@ function BetaAlertDetailModal({ alert, onClose }) {
                   <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
                     {pct != null && (
                       <span style={{ fontSize: '12px', color: '#4A524A' }}>
-                        <strong>{pct}%</strong> contribution{topSensor.sensor_peak_score != null ? ` (${formatScore(topSensor.sensor_peak_score)})` : ''}
+                        <strong>{pct}%</strong> contribution
                       </span>
                     )}
-                    <span style={{ color: '#D0D4D0' }}>|</span>
-                    {topSensor.sensor_sqs != null && (
-                      <span style={{ fontSize: '11px', color: topSensor.sensor_sqs >= 0.8 ? '#1565C0' : topSensor.sensor_sqs >= 0.5 ? '#E65100' : '#C62828', fontWeight: 600 }}>
-                        SQS {(topSensor.sensor_sqs * 100).toFixed(0)}%
-                      </span>
-                    )}
-                    <span style={{ color: '#D0D4D0' }}>|</span>
-                    {isSpanView && totalMin > 0 ? (
-                      <span style={{ fontSize: '11px', fontWeight: 600, color: topSensor.sensor_anomalous_minutes > 0 ? '#E65100' : '#2E7D32' }}>
-                        {topSensor.sensor_anomalous_minutes > 0
-                          ? `Degraded ${topSensor.sensor_anomalous_minutes}/${totalMin} min`
-                          : `Reliable ${totalMin}/${totalMin} min`}
-                      </span>
-                    ) : topSensor.sensor_trust ? (
-                      <span style={{ fontSize: '11px', fontWeight: 600, color: topSensor.sensor_trust === 'Reliable' ? '#2E7D32' : topSensor.sensor_trust === 'Degraded' ? '#E65100' : '#757575' }}>
-                        {topSensor.sensor_trust === 'Reliable' ? 'Reliable' : topSensor.sensor_trust === 'Degraded' ? 'Degraded' : topSensor.sensor_trust}
-                      </span>
-                    ) : null}
-                    <span style={{ color: '#D0D4D0' }}>|</span>
+                    {pct != null && <span style={{ color: '#D0D4D0' }}>|</span>}
                     <span style={{
                       padding: '1px 6px',
                       borderRadius: '8px',
@@ -472,7 +458,7 @@ function BetaAlertDetailModal({ alert, onClose }) {
           })()}
 
           {loading ? (
-            <div style={styles.loading}>Loading system alarm details...</div>
+            <div style={styles.loading}>Loading system anomaly details...</div>
           ) : (
             <>
               {hasDecomposition && (
@@ -484,14 +470,14 @@ function BetaAlertDetailModal({ alert, onClose }) {
               )}
 
               <div style={styles.sectionTitle}>
-                Sensor-Level Alerts ({sensorAlerts.length})
+                Sensor-Level Anomalies ({sensorAlerts.length})
                 <InfoTooltip text={currentView === 'span'
-                  ? 'These rows aggregate sensor involvement across the selected alarm span. Peak contribution is the highest minute-level contribution, and mean contribution is averaged over the full span.'
-                  : 'These rows show per-sensor contribution values for the selected alarm minute. These contribution values are ranked relative influences and are not expected to sum to the subsystem risk score.'} />
+                  ? 'These rows aggregate sensor involvement across the selected anomaly span. Peak contribution is the highest minute-level contribution, and mean contribution is averaged over the full span.'
+                  : 'These rows show per-sensor contribution values for the selected anomaly minute. These contribution values are ranked relative influences and are not expected to sum to the subsystem risk score.'} />
               </div>
 
               {sensorAlerts.length === 0 ? (
-                <div style={styles.loading}>No sensor-level rows were returned for this {currentView === 'span' ? 'span' : 'alert'}.</div>
+                <div style={styles.loading}>No sensor-level rows were returned for this {currentView === 'span' ? 'span' : 'anomaly'}.</div>
               ) : (
                 <div style={{ overflowX: 'auto' }}>
                   <table style={styles.sensorTable}>
@@ -500,9 +486,7 @@ function BetaAlertDetailModal({ alert, onClose }) {
                         <th style={styles.th}>Rank</th>
                         <th style={styles.th}>Sensor</th>
                         <th style={styles.th}>Contribution</th>
-                        {isSpanView && <th style={styles.th}>Mean</th>}
-                        <th style={styles.th}>SQS</th>
-                        <th style={styles.th}>Behavior</th>
+                        {isSpanView && <th style={styles.th}>Mean %</th>}
                         <th style={styles.th}>Severity</th>
                       </tr>
                     </thead>
@@ -519,67 +503,15 @@ function BetaAlertDetailModal({ alert, onClose }) {
                             <td style={styles.td}>#{sensorAlert.sensor_rank}</td>
                             <td style={{ ...styles.td, fontWeight: 500 }}>{formatSensorName(sensorAlert.sensor)}</td>
                             <td style={styles.td}>
-                              <span style={{ fontWeight: 600 }}>{sensorAlert.sensor_contribution_pct != null ? `${sensorAlert.sensor_contribution_pct}%` : formatScore(sensorAlert.sensor_peak_score)}</span>
-                              {sensorAlert.sensor_contribution_pct != null && sensorAlert.sensor_peak_score != null && (
-                                <span style={{ fontSize: '11px', color: '#6B736B', marginLeft: '4px' }}>({formatScore(sensorAlert.sensor_peak_score)})</span>
-                              )}
+                              <span style={{ fontWeight: 600 }}>{sensorAlert.sensor_contribution_pct != null ? `${sensorAlert.sensor_contribution_pct}%` : '--'}</span>
                             </td>
-                            {isSpanView && <td style={styles.td}>{formatScore(sensorAlert.sensor_mean_score)}</td>}
-                            <td style={styles.td}>
-                              {sensorAlert.sensor_sqs != null ? (
-                                <span style={{
-                                  fontWeight: 600,
-                                  color: sensorAlert.sensor_sqs >= 0.8 ? '#1565C0' : sensorAlert.sensor_sqs >= 0.5 ? '#E65100' : '#C62828',
-                                }}>
-                                  {(sensorAlert.sensor_sqs * 100).toFixed(0)}%
-                                </span>
-                              ) : (
-                                <span style={{ color: '#B0B8B0' }}>--</span>
-                              )}
-                            </td>
-                            <td style={styles.td}>
-                              {isSpanView && (sensorAlert.sensor_normal_minutes > 0 || sensorAlert.sensor_anomalous_minutes > 0) ? (
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'flex-start' }}>
-                                  {sensorAlert.sensor_anomalous_minutes > 0 && (
-                                    <span style={{
-                                      padding: '2px 8px', borderRadius: '10px', fontSize: '10px', fontWeight: 600,
-                                      background: '#FFF3E0', color: '#E65100',
-                                    }}>
-                                      Degraded {sensorAlert.sensor_anomalous_minutes}/{sensorAlert.sensor_normal_minutes + sensorAlert.sensor_anomalous_minutes} min
-                                    </span>
-                                  )}
-                                  {sensorAlert.sensor_normal_minutes > 0 && sensorAlert.sensor_anomalous_minutes === 0 && (
-                                    <span style={{
-                                      padding: '2px 8px', borderRadius: '10px', fontSize: '10px', fontWeight: 600,
-                                      background: '#E8F5E9', color: '#2E7D32',
-                                    }}>
-                                      Reliable {sensorAlert.sensor_normal_minutes}/{sensorAlert.sensor_normal_minutes} min
-                                    </span>
-                                  )}
-                                  {sensorAlert.sensor_normal_minutes > 0 && sensorAlert.sensor_anomalous_minutes > 0 && (
-                                    <span style={{
-                                      padding: '2px 8px', borderRadius: '10px', fontSize: '10px', fontWeight: 600,
-                                      background: '#E8F5E9', color: '#2E7D32',
-                                    }}>
-                                      Reliable {sensorAlert.sensor_normal_minutes}/{sensorAlert.sensor_normal_minutes + sensorAlert.sensor_anomalous_minutes} min
-                                    </span>
-                                  )}
-                                </div>
-                              ) : (
-                                <span style={{
-                                  padding: '2px 8px',
-                                  borderRadius: '10px',
-                                  fontSize: '10px',
-                                  fontWeight: 600,
-                                  background: sensorAlert.sensor_trust === 'Reliable' ? '#E8F5E9'
-                                    : sensorAlert.sensor_trust === 'Degraded' ? '#FFF3E0' : '#F5F5F5',
-                                  color: sensorAlert.sensor_trust === 'Reliable' ? '#2E7D32'
-                                    : sensorAlert.sensor_trust === 'Degraded' ? '#E65100' : '#757575',
-                                }}>
-                                  {sensorAlert.sensor_trust === 'Reliable' ? 'Reliable' : sensorAlert.sensor_trust === 'Degraded' ? 'Degraded' : 'Unknown'}
-                                </span>
-                              )}
-                            </td>
+                            {isSpanView && (
+                              <td style={styles.td}>
+                                {spanMeanContributionDenom > 0 && sensorAlert.sensor_mean_score != null
+                                  ? `${(((Number(sensorAlert.sensor_mean_score) || 0) / spanMeanContributionDenom) * 100).toFixed(1)}%`
+                                  : '--'}
+                              </td>
+                            )}
                             <td style={styles.td}>
                               <span style={{
                                 padding: '2px 8px',
@@ -609,6 +541,81 @@ function BetaAlertDetailModal({ alert, onClose }) {
                     </tbody>
                   </table>
                 </div>
+              )}
+
+              {isSpanView && (
+                <>
+                  <div style={styles.sectionTitle}>
+                    Minute-by-Minute Anomalies ({minuteRowsInSpan.length})
+                    <InfoTooltip text="Raw minute-level anomaly rows inside this selected span. These are direct minute entries, not aggregated totals." />
+                  </div>
+                  {minuteRowsInSpan.length === 0 ? (
+                    <div style={styles.loading}>No minute-level anomaly rows were returned for this span.</div>
+                  ) : (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={styles.sensorTable}>
+                        <thead>
+                          <tr>
+                            <th style={styles.th}>Window (UTC)</th>
+                            <th style={styles.th}>Severity</th>
+                            <th style={styles.th}>Risk Score</th>
+                            <th style={styles.th}>Confidence</th>
+                            <th style={styles.th}>Primary Sensor</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {minuteRowsInSpan.map((row, idx) => {
+                            const rowSeverity = String(row.severity || 'LOW').toUpperCase();
+                            const rowWindow = !row.end_ts || String(row.start_ts) === String(row.end_ts)
+                              ? formatTimestamp(row.start_ts || row.event_start)
+                              : `${formatTimestamp(row.start_ts || row.event_start)} -- ${formatTimestamp(row.end_ts || row.event_end)}`;
+                            return (
+                              <motion.tr
+                                key={`${row.start_ts || row.event_start}-${idx}`}
+                                style={styles.sensorRow}
+                                whileHover={{ background: 'rgba(168, 220, 168, 0.15)' }}
+                              >
+                                <td style={styles.td}>{rowWindow}</td>
+                                <td style={styles.td}>
+                                  <span style={{
+                                    padding: '2px 8px',
+                                    borderRadius: '10px',
+                                    fontSize: '10px',
+                                    fontWeight: 600,
+                                    background: rowSeverity === 'HIGH'
+                                      ? '#FFCDD2'
+                                      : rowSeverity === 'MEDIUM'
+                                        ? '#FFE0B2'
+                                        : '#FFF8E1',
+                                    color: rowSeverity === 'HIGH'
+                                      ? '#C62828'
+                                      : rowSeverity === 'MEDIUM'
+                                        ? '#E65100'
+                                        : '#9A6A00',
+                                  }}>
+                                    {rowSeverity}
+                                  </span>
+                                </td>
+                                <td style={styles.td}>
+                                  {formatScore(row.risk_score)}
+                                  {row.adaptive_threshold != null && (
+                                    <span style={{ fontSize: '11px', color: '#6B736B', marginLeft: '4px' }}>
+                                      / {formatScore(row.adaptive_threshold)}
+                                    </span>
+                                  )}
+                                </td>
+                                <td style={styles.td}>
+                                  {row.system_confidence != null ? `${((row.system_confidence || 0) * 100).toFixed(0)}%` : '--'}
+                                </td>
+                                <td style={{ ...styles.td, fontWeight: 500 }}>{formatSensorName(row.sensor_id)}</td>
+                              </motion.tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
               )}
             </>
           )}

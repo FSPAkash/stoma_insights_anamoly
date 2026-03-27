@@ -12,10 +12,27 @@ backend/__pycache__/
 *.pyc
 *.pyo
 
-# Large binary data (parquet, xlsx) - CSVs are kept
-backend/data/*.parquet
+# Data files
+# Keep parquet files tracked (needed for deploy/runtime data on Render)
 backend/data/*.xlsx
-backend/*.parquet
+backend/*.xlsx
+
+# Beta data: ignore bulky CSV outputs when parquet equivalents exist.
+# Keep a small set of CSVs that are still required by current beta endpoints.
+backend/data_beta/*.csv
+backend/data_beta/process_risk_outputs/*.csv
+backend/data_beta/standalone_outputs/*.csv
+!backend/data_beta/dynamic_catalog.csv
+!backend/data_beta/dynamic_weights.csv
+!backend/data_beta/initial_sensor_validation_report.csv
+!backend/data_beta/sensor_config.csv
+!backend/data_beta/subsystem_summary.csv
+!backend/data_beta/system_summary.csv
+
+# Generated pipeline output folders
+backend/pipeline_outputs_*/
+backend/NEW/
+backend/data_beta_deployed/
 
 # Pipeline artifacts
 backend/pipeline.log
@@ -29,6 +46,7 @@ backend/pipeline.done
 Thumbs.db
 .vscode/
 .idea/
+.claude/
 
 # Environment
 .env
