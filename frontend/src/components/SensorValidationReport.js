@@ -134,15 +134,16 @@ const styles = {
   dot: { width: '6px', height: '6px', borderRadius: '50%', flexShrink: 0 },
 };
 
-function SensorValidationReport() {
+function SensorValidationReport({ hasData = true }) {
   const [data, setData] = useState(null);
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
+    if (!hasData) { setData(null); return; }
     getBetaSensorValidationReport()
       .then(res => setData(res.data))
       .catch(() => {});
-  }, []);
+  }, [hasData]);
 
   if (!data || data.total === 0) return null;
 

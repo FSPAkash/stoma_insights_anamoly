@@ -7,6 +7,7 @@ import {
   Tooltip,
   CartesianGrid,
   ReferenceArea,
+  ReferenceLine,
   ComposedChart,
 } from 'recharts';
 import GlassCard from './GlassCard';
@@ -172,7 +173,7 @@ const CustomTooltip = ({ active, payload, downtimeBands, alarmBands, alarmView }
   );
 };
 
-function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, startTime, endTime, onZoomChange, onSelectAlert, subsystems: subsystemsProp }) {
+function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, startTime, endTime, onZoomChange, onZoomReset, isZoomed, onSelectAlert, subsystems: subsystemsProp, allDaysMode, onScrollDayChange, hasData = true, statusByDay = {} }) {
   const alarmView = 'span';
   const subsystems = useMemo(() => (subsystemsProp || []).filter(s => s.system_id !== 'ISOLATED'), [subsystemsProp]);
   const [selectedSystem, setSelectedSystem] = useState(null);
@@ -251,7 +252,7 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
     const tsCol = sensorData.timestamp_col;
     let rows = sensorData.timeseries;
 
-    if (selectedDay) {
+    if (!allDaysMode && selectedDay) {
       rows = rows.filter((row) => {
         const ts = row[tsCol];
         return ts && String(ts).substring(0, 10) === selectedDay;
@@ -278,8 +279,9 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
       ...row, _idx: i,
       ts: row[tsCol] ? String(row[tsCol]).substring(11, 16) : '',
       fullTs: row[tsCol] || '',
+      _day: row[tsCol] ? String(row[tsCol]).substring(0, 10) : '',
     }));
-  }, [sensorData, selectedDay, isLatestMode, lastNHours, startTime, endTime]);
+  }, [sensorData, selectedDay, isLatestMode, lastNHours, startTime, endTime, allDaysMode]);
 
   const findClosestIdx = useCallback((targetMs, data) => {
     if (!data.length) return null;
@@ -413,10 +415,19 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
         }
       }
     }
-    if (!isFinite(min) || !isFinite(max)) return ['auto', 'auto'];
-    const range = max - min;
-    const pad = range > 0 ? range * 0.05 : 1;
-    return [Math.floor((min - pad) * 100) / 100, Math.ceil((max + pad) * 100) / 100];
+    if (!isFinite(min) || !isFinite(max)) return [0, 0.3];
+    const vals = [];
+    for (const row of chartData) {
+      for (const s of active) {
+        const v = row[s];
+        if (v != null && isFinite(v)) vals.push(v);
+      }
+    }
+    if (!vals.length) return [0, 0.3];
+    vals.sort((a, b) => a - b);
+    const p95 = vals[Math.floor(vals.length * 0.95)];
+    const hi = Math.min(1, Math.ceil((p95 * 1.5) * 100) / 100);
+    return [0, Math.max(hi, 0.15)];
   }, [chartData, sensors, visibleSensors]);
 
   const xTicks = useMemo(() => {
@@ -424,15 +435,79 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
     const n = chartData.length;
     const seen = new Set();
     const ticks = [];
-    const granularity = n <= 60 ? 'minute' : 'hour';
-    for (const row of chartData) {
-      const ts = row.fullTs ? String(row.fullTs) : '';
-      if (!ts) continue;
-      const key = granularity === 'minute' ? ts.substring(11, 16) : ts.substring(11, 13);
-      if (!seen.has(key)) { seen.add(key); ticks.push(row._idx); }
+    if (allDaysMode) {
+      // Show a tick every hour
+      for (const row of chartData) {
+        const ts = row.fullTs || '';
+        if (!ts) continue;
+        const key = ts.substring(0, 13);
+        if (!seen.has(key)) { seen.add(key); ticks.push(row._idx); }
+      }
+    } else {
+      const granularity = n <= 60 ? 'minute' : 'hour';
+      for (const row of chartData) {
+        const ts = row.fullTs ? String(row.fullTs) : '';
+        if (!ts) continue;
+        const key = granularity === 'minute' ? ts.substring(11, 16) : ts.substring(11, 13);
+        if (!seen.has(key)) { seen.add(key); ticks.push(row._idx); }
+      }
     }
     return ticks;
-  }, [chartData]);
+  }, [chartData, allDaysMode]);
+
+  // Day boundary indices for vertical separator lines
+  const dayBoundaries = useMemo(() => {
+    if (!allDaysMode || !chartData.length) return [];
+    const boundaries = [];
+    const seen = new Set();
+    for (const row of chartData) {
+      const ts = row.fullTs || '';
+      if (!ts) continue;
+      const hour = ts.substring(11, 13);
+      const day = ts.substring(0, 10);
+      if (hour === '00' && !seen.has(day)) {
+        seen.add(day);
+        boundaries.push({ idx: row._idx, day });
+      }
+    }
+    return boundaries;
+  }, [allDaysMode, chartData]);
+
+  // Scroll infrastructure for allDaysMode
+  const scrollContainerRef = useRef(null);
+  const [visibleDay, setVisibleDay] = useState(null);
+
+  const scrollChartWidth = useMemo(() => {
+    if (!allDaysMode || !chartData.length) return null;
+    const days = new Set(chartData.map(r => r._day).filter(Boolean));
+    const numDays = Math.max(days.size, 1);
+    const pointsPerDay = chartData.length / numDays;
+    const viewportWidth = 1200;
+    const pxPerPoint = viewportWidth / pointsPerDay;
+    return Math.max(Math.round(chartData.length * pxPerPoint), 1200);
+  }, [allDaysMode, chartData]);
+
+  const handleChartScroll = useCallback((e) => {
+    if (!allDaysMode || !chartData.length || !onScrollDayChange) return;
+    const container = e.target;
+    const scrollLeft = container.scrollLeft;
+    const viewWidth = container.clientWidth;
+    const totalWidth = container.scrollWidth;
+    const centerFraction = (scrollLeft + viewWidth / 2) / totalWidth;
+    const centerIdx = Math.floor(centerFraction * chartData.length);
+    const row = chartData[Math.min(centerIdx, chartData.length - 1)];
+    if (row?._day && row._day !== visibleDay) {
+      setVisibleDay(row._day);
+      onScrollDayChange(row._day);
+    }
+  }, [allDaysMode, chartData, visibleDay, onScrollDayChange]);
+
+  useEffect(() => {
+    if (allDaysMode && scrollContainerRef.current) {
+      const el = scrollContainerRef.current;
+      setTimeout(() => { el.scrollLeft = el.scrollWidth - el.clientWidth; }, 50);
+    }
+  }, [allDaysMode, scrollChartWidth]);
 
   const handleZoomMouseDown = useCallback((e) => {
     if (e?.activeLabel != null) {
@@ -469,11 +544,34 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
     dragStartRef.current = null;
   }, [refAreaLeft, refAreaRight, onZoomChange, chartData]);
 
+  if (!hasData) {
+    return (
+      <GlassCard delay={0.5} style={{ marginTop: '8px' }} intensity="strong">
+        <div style={styles.heading}>Subsystem Behavior</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '300px', color: '#8A928A', fontSize: '15px' }}>
+          No data available for the selected system
+        </div>
+      </GlassCard>
+    );
+  }
+
   return (
     <GlassCard delay={0.5} style={{ marginTop: '8px' }} intensity="strong">
       <div style={styles.heading}>
         Subsystem Behavior
         <InfoTooltip text="Live sensor traces for each subsystem. Gray bands indicate downtime. Colored overlays indicate dynamic contiguous anomaly spans built from source minute-level anomalies." />
+        {isZoomed && onZoomReset && (
+          <div onClick={onZoomReset} style={{
+            marginLeft: 'auto',
+            display: 'inline-flex', alignItems: 'center', gap: '6px',
+            fontSize: '10px', padding: '4px 12px', borderRadius: '20px', cursor: 'pointer',
+            border: '1.5px solid rgba(27,94,32,0.4)', background: 'rgba(27,94,32,0.06)',
+            color: '#1B5E20', fontWeight: 600, transition: 'all 0.2s',
+          }}>
+            <span>Reset zoom</span>
+            <span style={{ fontSize: '12px', opacity: 0.6 }}>x</span>
+          </div>
+        )}
       </div>
 
       <div style={styles.tabRow}>
@@ -558,6 +656,49 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
             </div>
             </div>
 
+            <div ref={scrollContainerRef} onScroll={handleChartScroll}
+              style={allDaysMode ? { overflowX: 'auto', overflowY: 'hidden', width: '100%' } : {}}>
+            <div style={allDaysMode ? { width: `${scrollChartWidth}px`, minWidth: '100%' } : {}}>
+            {allDaysMode && visibleDay && (
+              <div style={{
+                position: 'sticky',
+                left: 0,
+                zIndex: 2,
+                width: 'fit-content',
+                marginBottom: '6px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+              }}>
+                <div style={{
+                  padding: '4px 12px',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  color: '#1B5E20',
+                  background: 'rgba(245,248,245,0.9)',
+                  border: '1px solid rgba(203,230,200,0.5)',
+                  borderRadius: '6px',
+                }}>
+                  {new Date(visibleDay + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                </div>
+                {statusByDay?.[visibleDay] && (
+                  <div
+                    title={statusByDay[visibleDay].detail}
+                    style={{
+                      padding: '3px 10px',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      color: statusByDay[visibleDay].color,
+                      background: `${statusByDay[visibleDay].color}18`,
+                      borderRadius: '999px',
+                      border: `1px solid ${statusByDay[visibleDay].color}55`,
+                    }}
+                  >
+                    Status: {statusByDay[visibleDay].label}
+                  </div>
+                )}
+              </div>
+            )}
             <ResponsiveContainer width="100%" height={340}>
               <ComposedChart
                 data={chartData}
@@ -569,14 +710,39 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
                 onClick={handleChartClick}
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,230,200,0.4)" />
+                {dayBoundaries.map((b) => (
+                  <ReferenceLine key={`day-${b.day}`} x={b.idx} stroke="#F9A825" strokeWidth={2} strokeDasharray="8 4" />
+                ))}
                 <XAxis
                   dataKey="_idx" type="number" domain={['dataMin', 'dataMax']}
-                  ticks={xTicks} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false}
+                  ticks={xTicks} tickLine={false}
                   label={{ value: 'UTC', position: 'insideBottomRight', offset: -2, style: { fontSize: 9, fill: '#8A928A' } }}
-                  tickFormatter={(idx) => {
+                  tick={(props) => {
+                    const { x, y, payload } = props;
+                    const idx = payload.value;
                     const row = chartData.find((r) => r._idx === idx) || chartData[idx];
-                    if (!row) return '';
-                    return row.ts;
+                    if (!row) return null;
+                    let label = row.ts;
+                    let isDayLabel = false;
+                    if (allDaysMode && row.fullTs) {
+                      const hour = row.fullTs.substring(11, 16);
+                      if (hour === '00:00') {
+                        const d = new Date(row._day + 'T00:00:00');
+                        label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                        isDayLabel = true;
+                      } else {
+                        label = hour;
+                      }
+                    }
+                    return (
+                      <g>
+                        <text x={x} y={y + 12} textAnchor="middle"
+                          fontSize={isDayLabel ? 11 : 9}
+                          fontWeight={isDayLabel ? 700 : 400}
+                          fill={isDayLabel ? '#F9A825' : '#8A928A'}
+                        >{label}</text>
+                      </g>
+                    );
                   }}
                 />
                 <YAxis domain={yDomain} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false} />
@@ -639,6 +805,8 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
                 )}
               </ComposedChart>
             </ResponsiveContainer>
+            </div>
+            </div>
 
 
 

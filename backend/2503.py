@@ -43,11 +43,15 @@ print("✅ Imports complete.")
 class PipelineConfig:
     # --- Source ---
     parquet_path: str = (
-        r"data_analysis_data_bq-results-iot-staging-shredder-sensor-2026_02_01-2026_02_07.parquet"
+        r"merged.parquet"
     )
     long_ts_col: str = "START_T"
     long_sensor_col: str = "SENSOR_ID"
     long_value_col: str = "QUANTITY_VALUE_D"
+
+    # --- Date filter ---
+    date_start: str = "2026-02-01"
+    date_end: str = "2026-02-11"
 
     # --- Time grid ---
     freq: str = "1min"
@@ -251,6 +255,10 @@ def read_parquet_long_to_wide(cfg: PipelineConfig) -> pd.DataFrame:
         chunk = batch.to_pandas()
         chunk[cfg.long_ts_col] = pd.to_datetime(chunk[cfg.long_ts_col], utc=True)
         chunk = chunk.dropna(subset=[cfg.long_ts_col, cfg.long_sensor_col])
+        chunk = chunk[
+            (chunk[cfg.long_ts_col] >= pd.Timestamp(cfg.date_start, tz="UTC"))
+            & (chunk[cfg.long_ts_col] < pd.Timestamp(cfg.date_end, tz="UTC"))
+        ]
         chunk[cfg.long_value_col] = pd.to_numeric(chunk[cfg.long_value_col], errors="coerce")
         chunks.append(chunk)
         print(f"   Batch {i+1}: {len(chunk):,} rows loaded")
@@ -259,7 +267,11 @@ def read_parquet_long_to_wide(cfg: PipelineConfig) -> pd.DataFrame:
     del chunks  # free memory immediately
     print(f"   Raw rows: {len(raw):,}")
     print(f"   Unique sensors: {raw[cfg.long_sensor_col].nunique()}")
+    print(f"   Unique timestamps: {raw[cfg.long_ts_col].nunique():,}")
     print(f"   Time range: {raw[cfg.long_ts_col].min()} → {raw[cfg.long_ts_col].max()}")
+
+    # Round timestamps to nearest second to reduce pivot cardinality
+    raw[cfg.long_ts_col] = raw[cfg.long_ts_col].dt.floor("s")
 
     # ✅ Pivot with sort=False + inplace sorts (from previous fix)
     wide = raw.pivot_table(
@@ -326,6 +338,14 @@ def resample_to_minute_grid(df: pd.DataFrame) -> pd.DataFrame:
 raw_wide = read_parquet_long_to_wide(cfg)
 df = resample_to_minute_grid(raw_wide)
 print(f"✅ Minute-grid data: {df.shape[0]:,} rows × {df.shape[1]} columns")
+cols_to_ffill = [
+    'DESF_TA__RTD_1', 'DESF_TA__RTD_2', 'DESF_TA__RTD_3', 'DESF_TA__RTD_4',
+    'DESF_TA__RTD_5', 'DESF_TA__RTD_6', 'DESF_TA__RTD_7', 'DESF_TA__RTD_8'
+]
+# Keep only columns that exist in df
+existing_cols = [col for col in cols_to_ffill if col in df.columns]
+# Forward fill those columns
+df[existing_cols] = df[existing_cols].ffill()
 
 # %%
 # =============================================================================
@@ -1431,7 +1451,9 @@ def export_beta_chart_inputs(
     chart_df.index.name = "timestamp_utc"
 
     df_chart_data_path = os.path.join(output_dir, "df_chart_data.csv")
-    chart_df.reset_index().to_csv(df_chart_data_path, index=False)
+    chart_reset = chart_df.reset_index()
+    chart_reset.to_csv(df_chart_data_path, index=False)
+    chart_reset.to_parquet(os.path.join(output_dir, "df_chart_data.parquet"), index=False)
 
     sensor_value_paths: List[str] = []
     for sys_label, sensors in sorted(catalog.items()):
@@ -1439,7 +1461,9 @@ def export_beta_chart_inputs(
         if not keep_cols:
             continue
         sys_path = os.path.join(output_dir, f"sensor_values_{sys_label}.csv")
-        chart_df[keep_cols].reset_index().to_csv(sys_path, index=False)
+        sys_reset = chart_df[keep_cols].reset_index()
+        sys_reset.to_csv(sys_path, index=False)
+        sys_reset.to_parquet(os.path.join(output_dir, f"sensor_values_{sys_label}.parquet"), index=False)
         sensor_value_paths.append(sys_path)
 
     return df_chart_data_path, sensor_value_paths

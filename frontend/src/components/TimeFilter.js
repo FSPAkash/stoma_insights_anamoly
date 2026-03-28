@@ -36,8 +36,10 @@ function TimeFilter({
   lastNHours,
   startTime,
   endTime,
+  allDaysMode,
   onSelectDay,
   onLatestClick,
+  onAllDaysClick,
   onLastNHoursChange,
   onStartTimeChange,
   onEndTimeChange,
@@ -48,7 +50,10 @@ function TimeFilter({
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap', marginBottom: '14px', padding: '8px 14px', background: 'rgba(245,248,245,0.6)', borderRadius: '10px', border: '1px solid rgba(203,230,200,0.35)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <div style={pillStyle(isLatestMode)} onClick={onLatestClick}>
+        <div style={pillStyle(allDaysMode)} onClick={onAllDaysClick}>
+          All Days
+        </div>
+        <div style={pillStyle(isLatestMode && !allDaysMode)} onClick={onLatestClick}>
           Latest{latestDay ? ` (${new Date(latestDay + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})` : ''}
         </div>
         <span style={{ fontSize: '10px', color: '#8A928A', fontWeight: 500 }}>or</span>

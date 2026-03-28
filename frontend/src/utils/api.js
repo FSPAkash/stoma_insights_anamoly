@@ -93,13 +93,13 @@ export const getBetaSensorValidationReport = () =>
 export const getBetaSubsystems = () =>
   api.get('/beta/subsystems');
 
-export const getBetaSensorQuality = (systemId, downsample = 40, params = {}) =>
+export const getBetaSensorQuality = (systemId, downsample = 1, params = {}) =>
   api.get(`/beta/sensor_quality/${encodeURIComponent(systemId)}`, { params: { downsample, ...params } });
 
 export const getBetaSensorQualityWindow = (systemId, startTs, endTs, downsample = 4) =>
   api.get(`/beta/sensor_quality/${encodeURIComponent(systemId)}`, { params: { downsample, start_ts: startTs, end_ts: endTs } });
 
-export const getBetaSubsystemScores = (downsample = 40) =>
+export const getBetaSubsystemScores = (downsample = 1) =>
   api.get('/beta/subsystem_scores', { params: { downsample } });
 
 export const getBetaAeMetadata = () =>
@@ -108,7 +108,7 @@ export const getBetaAeMetadata = () =>
 export const getBetaAlerts = (params = {}) =>
   dedupGet('/beta/alerts', { params });
 
-export const getBetaScoresTimeseries = (downsample = 40) =>
+export const getBetaScoresTimeseries = (downsample = 1) =>
   api.get('/beta/scores/timeseries', { params: { downsample } });
 
 export const getBetaDashboardSummary = (params = {}) =>
@@ -123,7 +123,7 @@ export const getBetaNormalPeriods = () =>
 export const getBetaSystems = () =>
   api.get('/beta/systems');
 
-export const getBetaSubsystemBehavior = (systemId, downsample = 40, params = {}) =>
+export const getBetaSubsystemBehavior = (systemId, downsample = 1, params = {}) =>
   api.get(`/beta/subsystem_behavior/${encodeURIComponent(systemId)}`, { params: { downsample, ...params } });
 
 export const getBetaAlertsSensorLevel = (params = {}) =>
@@ -132,7 +132,7 @@ export const getBetaAlertsSensorLevel = (params = {}) =>
 export const getBetaRadarFingerprints = () =>
   dedupGet('/beta/radar_fingerprints');
 
-export const getBetaSensorContributions = (systemId, downsample = 40) =>
+export const getBetaSensorContributions = (systemId, downsample = 1) =>
   api.get(`/beta/sensor_contributions/${encodeURIComponent(systemId)}`, { params: { downsample } });
 
 export const getBetaRiskDecompositionForEpisode = (startTs, endTs) =>

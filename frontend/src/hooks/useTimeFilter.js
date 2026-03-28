@@ -2,10 +2,11 @@ import { useState, useMemo, useEffect } from 'react';
 
 export default function useTimeFilter(timeseries, timestampCol) {
   const [selectedDay, setSelectedDay] = useState(null);
-  const [isLatestMode, setIsLatestMode] = useState(true);
+  const [isLatestMode, setIsLatestMode] = useState(false);
   const [lastNHours, setLastNHours] = useState(24);
   const [startTime, setStartTime] = useState('00:00');
   const [endTime, setEndTime] = useState('23:59');
+  const [allDaysMode, setAllDaysMode] = useState(true);
 
   // Extract unique days
   const availableDays = useMemo(() => {
@@ -32,6 +33,7 @@ export default function useTimeFilter(timeseries, timestampCol) {
     setSelectedDay(latestDay);
     setIsLatestMode(true);
     setLastNHours(24);
+    setAllDaysMode(false);
   };
 
   const handleDayChange = (day) => {
@@ -39,6 +41,12 @@ export default function useTimeFilter(timeseries, timestampCol) {
     setIsLatestMode(false);
     setStartTime('00:00');
     setEndTime('23:59');
+    setAllDaysMode(false);
+  };
+
+  const handleAllDaysClick = () => {
+    setAllDaysMode(true);
+    setIsLatestMode(false);
   };
 
   const handleReset = () => {
@@ -48,7 +56,9 @@ export default function useTimeFilter(timeseries, timestampCol) {
 
   // Filter timeseries by current day + time selection
   const filteredTimeseries = useMemo(() => {
-    if (!timeseries || !timeseries.length || !selectedDay) return [];
+    if (!timeseries || !timeseries.length) return [];
+    if (allDaysMode) return timeseries;
+    if (!selectedDay) return [];
     // Filter by day
     const dayData = timeseries.filter((row) => {
       const ts = row[timestampCol];
@@ -69,7 +79,7 @@ export default function useTimeFilter(timeseries, timestampCol) {
       });
     }
     return dayData;
-  }, [timeseries, timestampCol, selectedDay, isLatestMode, lastNHours, startTime, endTime]);
+  }, [timeseries, timestampCol, selectedDay, isLatestMode, lastNHours, startTime, endTime, allDaysMode]);
 
   // Compute stats from filtered timeseries
   const filteredStats = useMemo(() => {
@@ -123,6 +133,14 @@ export default function useTimeFilter(timeseries, timestampCol) {
 
   // Human-readable label for the active filter
   const filterLabel = useMemo(() => {
+    if (allDaysMode) {
+      if (availableDays.length >= 2) {
+        const first = new Date(availableDays[0] + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const last = new Date(availableDays[availableDays.length - 1] + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        return `Now showing All Days -- ${first} to ${last} (UTC)`;
+      }
+      return 'Now showing All Days (UTC)';
+    }
     if (!selectedDay) return '';
     const d = new Date(selectedDay + 'T00:00:00');
     const dayStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -133,7 +151,7 @@ export default function useTimeFilter(timeseries, timestampCol) {
       ? 'Full Day'
       : `${startTime} to ${endTime}`;
     return `Now showing ${dayStr} -- ${timeRange} (UTC)`;
-  }, [selectedDay, isLatestMode, lastNHours, startTime, endTime]);
+  }, [selectedDay, isLatestMode, lastNHours, startTime, endTime, allDaysMode, availableDays]);
 
   return {
     // Filter state
@@ -144,12 +162,15 @@ export default function useTimeFilter(timeseries, timestampCol) {
     endTime,
     availableDays,
     filterLabel,
+    allDaysMode,
     // Handlers
     handleLatestClick,
     handleDayChange,
+    handleAllDaysClick,
     setLastNHours,
     setStartTime: (v) => setStartTime(v),
     setEndTime: (v) => setEndTime(v),
+    setSelectedDay,
     handleReset,
     // Filtered data
     filteredTimeseries,

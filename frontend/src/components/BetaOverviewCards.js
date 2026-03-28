@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import ReactDOM from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -458,6 +458,8 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
 
 function BetaOverviewCards({
   selectedSystemName = 'Shredder',
+  systemOptions = [],
+  onSystemChange,
   fingerprints: fingerprintsProp,
   timeseries: timeseriesProp = [],
   timestampCol: timestampColProp = 'timestamp_utc',
@@ -466,28 +468,40 @@ function BetaOverviewCards({
   lastNHours,
   startTime,
   endTime,
+  hasData = true,
+  onStatusByDay,
 }) {
   const [overview, setOverview] = useState(null);
   const [subsystems, setSubsystems] = useState([]);
   const [showSystems, setShowSystems] = useState(false);
+  const [systemDropdownOpen, setSystemDropdownOpen] = useState(false);
+  const sysDropdownRef = useRef(null);
+  useEffect(() => {
+    if (!systemDropdownOpen) return;
+    const handler = (e) => { if (sysDropdownRef.current && !sysDropdownRef.current.contains(e.target)) setSystemDropdownOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [systemDropdownOpen]);
   const fingerprints = fingerprintsProp || [];
   const [minuteAlerts, setMinuteAlerts] = useState([]);
   const [selectedFp, setSelectedFp] = useState(null);
 
   useEffect(() => {
+    if (!hasData) { setOverview(null); setSubsystems([]); return; }
     Promise.all([
       getBetaOverview().then(res => setOverview(res.data)).catch(() => {}),
       getBetaSubsystems().then(res => setSubsystems(res.data.subsystems || [])).catch(() => {}),
     ]);
-  }, []);
+  }, [hasData]);
 
   useEffect(() => {
+    if (!hasData) { setMinuteAlerts([]); return; }
     let cancelled = false;
     getBetaAlerts({ alarm_view: 'minute' })
       .then((res) => { if (!cancelled) setMinuteAlerts(res.data.alerts || []); })
       .catch(() => { if (!cancelled) setMinuteAlerts([]); });
     return () => { cancelled = true; };
-  }, []);
+  }, [hasData]);
 
   const nonIsolated = subsystems.filter(s => s.system_id !== 'ISOLATED');
   const alarmFps = useMemo(
@@ -566,34 +580,171 @@ function BetaOverviewCards({
       ? { label: 'Attention required', color: '#E65100', detail: 'Anomalies detected, no downtime' }
       : { label: 'Stable', color: '#1B5E20', detail: 'No anomalies detected' };
 
+  // Compute status per day for chart day-labels
+  const statusByDay = useMemo(() => {
+    const tsCol = timestampColProp || 'timestamp_utc';
+    const rows = timeseriesProp || [];
+    const alerts = (minuteAlerts || []).filter((a) => a.class !== 'NORMAL');
+    const days = [...new Set(rows.map((r) => String(r?.[tsCol] || '').substring(0, 10)).filter(Boolean))];
+    const map = {};
+    for (const day of days) {
+      const dayRows = rows.filter((r) => String(r?.[tsCol] || '').substring(0, 10) === day);
+      const dayStart = new Date(`${day}T00:00:00Z`);
+      const dayEnd = new Date(`${day}T23:59:59Z`);
+      const dt = dayRows.some((r) =>
+        Number(r?.downtime_flag || 0) === 1 || String(r?.mode || '').toUpperCase() === 'DOWNTIME'
+      );
+      const al = alerts.some((a) => {
+        const s = new Date(String(a.start_ts || a.event_start || ''));
+        const e = new Date(String(a.end_ts || a.event_end || a.start_ts || ''));
+        if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return false;
+        return s <= dayEnd && e >= dayStart;
+      });
+      map[day] = dt
+        ? { label: 'Critical', color: '#D32F2F', detail: 'Downtime detected' }
+        : al
+          ? { label: 'Attention required', color: '#E65100', detail: 'Anomalies detected, no downtime' }
+          : { label: 'Stable', color: '#1B5E20', detail: 'No anomalies detected' };
+    }
+    return map;
+  }, [timeseriesProp, timestampColProp, minuteAlerts]);
+
+  // Expose statusByDay to parent
+  useEffect(() => {
+    if (onStatusByDay && Object.keys(statusByDay).length) onStatusByDay(statusByDay);
+  }, [statusByDay, onStatusByDay]);
+
+  // Latest date for "as of" label
+  const latestDay = useMemo(() => {
+    const tsCol = timestampColProp || 'timestamp_utc';
+    const rows = timeseriesProp || [];
+    if (!rows.length) return null;
+    const last = rows[rows.length - 1]?.[tsCol];
+    return last ? String(last).substring(0, 10) : null;
+  }, [timeseriesProp, timestampColProp]);
+
   return (
     <div>
       <div style={styles.grid}>
-        {/* System Selected */}
-        <GlassCard delay={0.05} intensity="strong" padding="0">
-          <div style={styles.cardInner}>
-            <div style={styles.statLabel}>
-              System Selected
-              <InfoTooltip text="The industrial system currently being monitored. All sensors belong to this system." />
+        {/* System Selected -- primary input, visually dominant */}
+        <div ref={sysDropdownRef} style={{ position: 'relative' }}>
+          <style>{`
+            @keyframes systemCardPulse {
+              0%, 100% { box-shadow: 0 0 8px rgba(27,94,32,0.15), 0 0 24px rgba(76,175,80,0.10); }
+              50% { box-shadow: 0 0 18px rgba(27,94,32,0.30), 0 0 40px rgba(76,175,80,0.18); }
+            }
+          `}</style>
+          <GlassCard
+            delay={0.05}
+            intensity="strong"
+            padding="0"
+            onClick={() => setSystemDropdownOpen((v) => !v)}
+            style={{ animation: 'systemCardPulse 3s ease-in-out infinite', border: '2px solid rgba(76,175,80,0.50)', position: 'relative', overflow: 'visible' }}
+          >
+            {/* Step badge */}
+            <div style={{
+              position: 'absolute', top: '-10px', left: '16px',
+              display: 'flex', alignItems: 'center', gap: '6px',
+              padding: '2px 12px 2px 8px', borderRadius: '10px',
+              background: '#1B5E20', color: '#fff',
+              fontSize: '10px', fontWeight: 700, letterSpacing: '0.04em',
+              boxShadow: '0 2px 8px rgba(27,94,32,0.25)',
+              zIndex: 2,
+            }}>
+              SELECT SYSTEM
             </div>
-            <div style={styles.statValue}>{selectedSystemName || overview?.system_name || 'Shredder'}</div>
-            <div style={styles.statSub}>
-              {overview?.data_range?.start && (
-                <span>{String(overview.data_range.start).substring(0, 10)} to {String(overview.data_range.end).substring(0, 10)}</span>
-              )}
+            {/* Flow arrow pointing right */}
+            <div style={{
+              position: 'absolute', top: '50%', right: '-14px', transform: 'translateY(-50%)',
+              width: 0, height: 0,
+              borderTop: '10px solid transparent', borderBottom: '10px solid transparent',
+              borderLeft: '14px solid rgba(76,175,80,0.35)',
+              zIndex: 2,
+            }} />
+            <div style={{ ...styles.cardInner, position: 'relative', cursor: 'pointer', paddingTop: '28px' }}>
+              <div style={styles.statLabel}>
+                System / Process
+                <InfoTooltip text="Select the industrial system or process to monitor. All dashboard sections below are driven by this selection." />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ ...styles.statValue, fontSize: '30px' }}>{selectedSystemName || overview?.system_name || 'Shredder'}</div>
+                <motion.span
+                  animate={{ rotate: systemDropdownOpen ? 180 : 0 }}
+                  transition={{ duration: 0.2 }}
+                  style={{ fontSize: '16px', color: '#2B6A30', fontWeight: 700, lineHeight: 1, display: 'inline-block' }}
+                >&#9662;</motion.span>
+              </div>
+              <div style={{ ...styles.statSub, marginTop: '6px' }}>
+                {overview?.data_range?.start ? (
+                  <span>{String(overview.data_range.start).substring(0, 10)} to {String(overview.data_range.end).substring(0, 10)}</span>
+                ) : (
+                  <span style={{ fontStyle: 'italic' }}>Choose a system to load data</span>
+                )}
+              </div>
             </div>
-          </div>
-        </GlassCard>
+          </GlassCard>
+          <AnimatePresence>
+            {systemDropdownOpen && onSystemChange && (
+              <motion.div
+                initial={{ opacity: 0, y: -8, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -8, scale: 0.97 }}
+                transition={{ duration: 0.18 }}
+                style={{
+                  position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0, zIndex: 50,
+                  background: 'rgba(255,255,255,0.92)', backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
+                  borderRadius: '14px', border: '1px solid rgba(168,220,168,0.5)',
+                  boxShadow: '0 8px 32px rgba(27,94,32,0.12), 0 2px 8px rgba(27,94,32,0.06)',
+                  overflow: 'hidden',
+                }}
+              >
+                {systemOptions.map((s) => (
+                  <div
+                    key={s}
+                    onClick={(e) => { e.stopPropagation(); onSystemChange(s); setSystemDropdownOpen(false); }}
+                    style={{
+                      padding: '12px 20px',
+                      fontSize: '15px',
+                      fontWeight: s === selectedSystemName ? 600 : 400,
+                      color: s === selectedSystemName ? '#1B5E20' : '#3E4A3E',
+                      background: s === selectedSystemName ? 'rgba(200,230,201,0.35)' : 'transparent',
+                      cursor: 'pointer',
+                      transition: 'background 0.15s',
+                      display: 'flex', alignItems: 'center', gap: '8px',
+                      borderBottom: '1px solid rgba(203,230,200,0.25)',
+                    }}
+                    onMouseEnter={(e) => { if (s !== selectedSystemName) e.currentTarget.style.background = 'rgba(200,230,201,0.2)'; }}
+                    onMouseLeave={(e) => { if (s !== selectedSystemName) e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    {s === selectedSystemName && <span style={{ color: '#2E7D32', fontSize: '13px' }}>&#10003;</span>}
+                    {s}
+                  </div>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
 
-        {/* Status */}
+        {/* Current Status */}
         <GlassCard delay={0.1} intensity="strong" padding="0">
           <div style={styles.cardInner}>
             <div style={styles.statLabel}>
-              Status
-              <InfoTooltip text="Overall system status based on anomalies and downtime. Critical if downtime exists, Attention required if anomalies exist without downtime, Stable when no anomalies." />
+              Current Status
+              <InfoTooltip text="Overall system status based on the latest day of data. Critical if downtime exists, Attention required if anomalies exist without downtime, Stable when no anomalies." />
             </div>
-            <div style={{ ...styles.statValue, color: status.color }}>{status.label}</div>
-            <div style={styles.statSub}>{status.detail}</div>
+            {hasData ? (
+              <>
+                <div style={{ ...styles.statValue, color: status.color }}>{status.label}</div>
+                <div style={styles.statSub}>{status.detail}</div>
+                {latestDay && (
+                  <div style={{ fontSize: '11px', color: '#8A928A', marginTop: '6px', fontStyle: 'italic' }}>
+                    as of {new Date(latestDay + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ color: '#8A928A', fontSize: '14px', marginTop: '12px' }}>No data available</div>
+            )}
           </div>
         </GlassCard>
 
@@ -604,32 +755,38 @@ function BetaOverviewCards({
             Subsystems Detected
             <InfoTooltip text="Subsystems discovered via hierarchical correlation clustering. Each groups sensors with correlated behavior. Isolated sensors don't cluster with any group." />
           </div>
-          <div style={styles.statValue}>{nonIsolated.length || '--'}</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '8px' }}>
-            {nonIsolated.map((sys, idx) => (
-              <span key={sys.system_id} style={{
-                display: 'inline-block', padding: '3px 10px', borderRadius: '12px',
-                fontSize: '11px', fontWeight: 600,
-                background: systemBgColor(sys.system_id),
-                color: systemColor(sys.system_id, idx),
-              }}>
-                {sys.system_id.replace('_', ' ')} ({sys.sensor_count})
-              </span>
-            ))}
-          </div>
-          <motion.button
-            onClick={() => setShowSystems(true)}
-            style={{
-              marginTop: '8px', display: 'inline-flex', alignItems: 'center', gap: '6px',
-              padding: '5px 14px', background: 'rgba(27,94,32,0.08)',
-              border: '1.5px solid rgba(27,94,32,0.2)', borderRadius: '16px',
-              fontSize: '11px', fontWeight: 600, color: '#1B5E20', cursor: 'pointer',
-            }}
-            whileHover={{ background: 'rgba(230,244,234,0.9)', borderColor: 'rgba(27,94,32,0.45)' }}
-            whileTap={{ scale: 0.97 }}
-          >
-            Check subsystems
-          </motion.button>
+          {hasData ? (
+            <>
+              <div style={styles.statValue}>{nonIsolated.length || '--'}</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '8px' }}>
+                {nonIsolated.map((sys, idx) => (
+                  <span key={sys.system_id} style={{
+                    display: 'inline-block', padding: '3px 10px', borderRadius: '12px',
+                    fontSize: '11px', fontWeight: 600,
+                    background: systemBgColor(sys.system_id),
+                    color: systemColor(sys.system_id, idx),
+                  }}>
+                    {sys.system_id.replace('_', ' ')} ({sys.sensor_count})
+                  </span>
+                ))}
+              </div>
+              <motion.button
+                onClick={() => setShowSystems(true)}
+                style={{
+                  marginTop: '8px', display: 'inline-flex', alignItems: 'center', gap: '6px',
+                  padding: '5px 14px', background: 'rgba(27,94,32,0.08)',
+                  border: '1.5px solid rgba(27,94,32,0.2)', borderRadius: '16px',
+                  fontSize: '11px', fontWeight: 600, color: '#1B5E20', cursor: 'pointer',
+                }}
+                whileHover={{ background: 'rgba(230,244,234,0.9)', borderColor: 'rgba(27,94,32,0.45)' }}
+                whileTap={{ scale: 0.97 }}
+              >
+                Check subsystems
+              </motion.button>
+            </>
+          ) : (
+            <div style={{ color: '#8A928A', fontSize: '14px', marginTop: '12px' }}>No data available</div>
+          )}
           </div>
         </GlassCard>
 
@@ -641,6 +798,9 @@ function BetaOverviewCards({
               <InfoTooltip text="Summary of peak anomaly events detected per subsystem. Each entry shows the highest-risk event window identified by the autoencoder fault fingerprint analysis." />
             </div>
             {(() => {
+              if (!hasData) {
+                return <div style={{ color: '#8A928A', fontSize: '14px', marginTop: '12px' }}>No data available</div>;
+              }
               if (!alarmFps.length) {
                 return (
                   <>

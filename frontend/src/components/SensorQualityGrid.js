@@ -10,6 +10,7 @@ import {
   Tooltip,
   CartesianGrid,
   ReferenceArea,
+  ReferenceLine,
   ComposedChart,
   RadarChart,
   PolarGrid,
@@ -547,7 +548,7 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
   );
 }
 
-function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHours, startTime, endTime, onZoomChange, onZoomReset, isZoomed, subsystems: subsystemsProp, fingerprints: fingerprintsProp }) {
+function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHours, startTime, endTime, allDaysMode, onScrollDayChange, onZoomChange, onZoomReset, isZoomed, subsystems: subsystemsProp, fingerprints: fingerprintsProp, hasData = true, statusByDay = {} }) {
   const alarmView = 'span';
   const subsystems = subsystemsProp || [];
   const [selectedSystem, setSelectedSystem] = useState(null);
@@ -571,6 +572,8 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
   const contribCacheRef = useRef({});
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef(null);
+  const scrollContainerRef = useRef(null);
+  const [visibleDay, setVisibleDay] = useState(null);
 
   useEffect(() => {
     if (subsystems.length > 0 && !selectedSystem) setSelectedSystem(subsystems[0].system_id);
@@ -665,7 +668,9 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
   };
 
   const applyTimeFilter = useCallback((rows, tsKey = 'ts') => {
-    if (!selectedDay || !rows.length) return rows;
+    if (!rows.length) return rows;
+    if (allDaysMode) return rows;
+    if (!selectedDay) return rows;
     let filtered = rows.filter((row) => {
       const ts = row[tsKey];
       return ts && String(ts).substring(0, 10) === selectedDay;
@@ -687,17 +692,21 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
       });
     }
     return filtered;
-  }, [selectedDay, isLatestMode, lastNHours, startTime, endTime]);
+  }, [selectedDay, isLatestMode, lastNHours, startTime, endTime, allDaysMode]);
 
   // Subsystem-level chart data
   const subsystemChartData = useMemo(() => {
     if (!qualityData?.subsystem_timeseries?.length) return [];
     const filtered = applyTimeFilter(qualityData.subsystem_timeseries);
-    return filtered.map((row, i) => ({
-      ...row, _idx: i,
-      fullTs: row.ts ? String(row.ts) : '',
-      ts: row.ts ? String(row.ts).substring(11, 16) : '',
-    }));
+    return filtered.map((row, i) => {
+      const full = row.ts ? String(row.ts) : '';
+      return {
+        ...row, _idx: i,
+        fullTs: full,
+        ts: full ? full.substring(11, 16) : '',
+        _day: full ? full.substring(0, 10) : '',
+      };
+    });
   }, [qualityData, applyTimeFilter]);
 
   // Sensor-level chart data
@@ -717,10 +726,12 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
       const sqsDegraded = allSensors
         .filter((s) => { const v = row[`${s}__sqs`]; return v != null && isFinite(v) && v < 1; })
         .map((s) => ({ sensor: s, sqs: row[`${s}__sqs`] }));
+      const full = row.ts ? String(row.ts) : '';
       return {
         ...row, _idx: i, _avgSqsPct: avgSqsPct, _sqsDegraded: sqsDegraded,
-        fullTs: row.ts ? String(row.ts) : '',
-        ts: row.ts ? String(row.ts).substring(11, 16) : '',
+        fullTs: full,
+        ts: full ? full.substring(11, 16) : '',
+        _day: full ? full.substring(0, 10) : '',
       };
     });
   }, [qualityData, applyTimeFilter]);
@@ -857,42 +868,38 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
 
   // Y-domain for sensor view (Engine A/B only, SQS is shown as heatstrip)
   const sensorYDomain = useMemo(() => {
-    if (viewMode !== 'sensor' || !chartData.length || !sensors.length) return ['auto', 'auto'];
+    if (viewMode !== 'sensor' || !chartData.length || !sensors.length) return [0, 0.3];
     const activeSensors = sensors.filter((s) => visibleSensors[s]);
-    if (!activeSensors.length) return ['auto', 'auto'];
-    let min = Infinity, max = -Infinity;
+    if (!activeSensors.length) return [0, 0.3];
+    const vals = [];
     for (const row of chartData) {
       for (const s of activeSensors) {
         const v = row[`${s}__${activeMetric}`];
-        if (v != null && isFinite(v)) {
-          if (v < min) min = v;
-          if (v > max) max = v;
-        }
+        if (v != null && isFinite(v)) vals.push(v);
       }
     }
-    if (!isFinite(min) || !isFinite(max)) return ['auto', 'auto'];
-    const range = max - min;
-    const pad = range > 0 ? range * 0.05 : 0.1;
-    return [Math.floor((min - pad) * 100) / 100, Math.ceil((max + pad) * 100) / 100];
+    if (!vals.length) return [0, 0.3];
+    vals.sort((a, b) => a - b);
+    const p95 = vals[Math.floor(vals.length * 0.95)];
+    const hi = Math.min(1, Math.ceil((p95 * 1.5) * 100) / 100);
+    return [0, Math.max(hi, 0.15)];
   }, [chartData, sensors, visibleSensors, activeMetric, viewMode]);
 
   // Y-domain for subsystem view
   const subsystemYDomain = useMemo(() => {
-    if (viewMode !== 'subsystem' || !chartData.length) return ['auto', 'auto'];
-    let min = Infinity, max = -Infinity;
+    if (viewMode !== 'subsystem' || !chartData.length) return [0, 0.3];
+    const vals = [];
     for (const row of chartData) {
       for (const key of ['system_score', 'adaptive_threshold']) {
         const v = row[key];
-        if (v != null && isFinite(v)) {
-          if (v < min) min = v;
-          if (v > max) max = v;
-        }
+        if (v != null && isFinite(v)) vals.push(v);
       }
     }
-    if (!isFinite(min) || !isFinite(max)) return ['auto', 'auto'];
-    const range = max - min;
-    const pad = range > 0 ? range * 0.1 : 0.1;
-    return [Math.max(0, Math.floor((min - pad) * 100) / 100), Math.ceil((max + pad) * 100) / 100];
+    if (!vals.length) return [0, 0.3];
+    vals.sort((a, b) => a - b);
+    const p95 = vals[Math.floor(vals.length * 0.95)];
+    const hi = Math.min(1, Math.ceil((p95 * 1.5) * 100) / 100);
+    return [0, Math.max(hi, 0.15)];
   }, [chartData, viewMode]);
 
   const yDomain = viewMode === 'subsystem' ? subsystemYDomain : sensorYDomain;
@@ -903,15 +910,80 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
     const n = chartData.length;
     const seen = new Set();
     const ticks = [];
-    const granularity = n <= 60 ? 'minute' : 'hour';
+    if (allDaysMode) {
+      // In all-days mode, show a tick every hour
+      for (const row of chartData) {
+        const ts = row.fullTs || '';
+        if (!ts) continue;
+        const key = ts.substring(0, 13); // YYYY-MM-DDTHH
+        if (!seen.has(key)) { seen.add(key); ticks.push(row._idx); }
+      }
+    } else {
+      const granularity = n <= 60 ? 'minute' : 'hour';
+      for (const row of chartData) {
+        const ts = row.fullTs || '';
+        if (!ts) continue;
+        const key = granularity === 'minute' ? ts.substring(11, 16) : ts.substring(11, 13);
+        if (!seen.has(key)) { seen.add(key); ticks.push(row._idx); }
+      }
+    }
+    return ticks;
+  }, [chartData, allDaysMode]);
+
+  // Day boundary indices for vertical separator lines
+  const dayBoundaries = useMemo(() => {
+    if (!allDaysMode || !chartData.length) return [];
+    const boundaries = [];
+    const seen = new Set();
     for (const row of chartData) {
       const ts = row.fullTs || '';
       if (!ts) continue;
-      const key = granularity === 'minute' ? ts.substring(11, 16) : ts.substring(11, 13);
-      if (!seen.has(key)) { seen.add(key); ticks.push(row._idx); }
+      const hour = ts.substring(11, 13);
+      const day = ts.substring(0, 10);
+      if (hour === '00' && !seen.has(day)) {
+        seen.add(day);
+        boundaries.push({ idx: row._idx, day });
+      }
     }
-    return ticks;
-  }, [chartData]);
+    return boundaries;
+  }, [allDaysMode, chartData]);
+
+  // Scrollable chart width: one day of data should span ~one viewport width
+  const scrollChartWidth = useMemo(() => {
+    if (!allDaysMode || !chartData.length) return null;
+    // Count distinct days to compute points-per-day
+    const days = new Set(chartData.map(r => r._day).filter(Boolean));
+    const numDays = Math.max(days.size, 1);
+    const pointsPerDay = chartData.length / numDays;
+    const viewportWidth = 1200; // approximate viewport width
+    const pxPerPoint = viewportWidth / pointsPerDay;
+    return Math.max(Math.round(chartData.length * pxPerPoint), 1200);
+  }, [allDaysMode, chartData]);
+
+  // Scroll handler: detect which day is visible at the center of the scroll viewport
+  const handleChartScroll = useCallback((e) => {
+    if (!allDaysMode || !chartData.length || !onScrollDayChange) return;
+    const container = e.target;
+    const scrollLeft = container.scrollLeft;
+    const viewWidth = container.clientWidth;
+    const totalWidth = container.scrollWidth;
+    // Estimate which data index is at the center of the viewport
+    const centerFraction = (scrollLeft + viewWidth / 2) / totalWidth;
+    const centerIdx = Math.floor(centerFraction * chartData.length);
+    const row = chartData[Math.min(centerIdx, chartData.length - 1)];
+    if (row?._day && row._day !== visibleDay) {
+      setVisibleDay(row._day);
+      onScrollDayChange(row._day);
+    }
+  }, [allDaysMode, chartData, onScrollDayChange, visibleDay]);
+
+  // Auto-scroll to end (latest data) when entering allDaysMode
+  useEffect(() => {
+    if (allDaysMode && scrollContainerRef.current) {
+      const el = scrollContainerRef.current;
+      setTimeout(() => { el.scrollLeft = el.scrollWidth; }, 100);
+    }
+  }, [allDaysMode, chartData.length]);
 
   const handleZoomMouseDown = useCallback((e) => {
     if (e?.activeLabel != null) {
@@ -982,6 +1054,17 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
 
   const hasSubsystemData = subsystemChartData.length > 0;
   const hasSensorData = sensorChartData.length > 0;
+
+  if (!hasData) {
+    return (
+      <GlassCard delay={0.4} style={{ marginTop: '8px' }} intensity="strong">
+        <div style={styles.heading}>Sensor Quality</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '300px', color: '#8A928A', fontSize: '15px' }}>
+          No data available for the selected system
+        </div>
+      </GlassCard>
+    );
+  }
 
   return (
     <GlassCard delay={0.4} style={{ marginTop: '8px' }} intensity="strong">
@@ -1188,10 +1271,57 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
               )}
 
             </div>
+            <div
+              ref={scrollContainerRef}
+              onScroll={handleChartScroll}
+              style={allDaysMode ? { overflowX: 'auto', overflowY: 'hidden', width: '100%', position: 'relative' } : {}}
+            >
+            <div style={allDaysMode ? { width: `${scrollChartWidth}px`, minWidth: '100%' } : {}}>
+            {/* Date + status callout banner for allDaysMode (status for the visible day only) */}
+            {allDaysMode && visibleDay && (
+              <div style={{
+                position: 'sticky',
+                left: 0,
+                width: 'fit-content',
+                marginBottom: '6px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                zIndex: 2,
+              }}>
+                <div style={{
+                  padding: '3px 12px',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  color: '#1B5E20',
+                  background: 'rgba(243,248,243,0.9)',
+                  borderRadius: '6px',
+                  border: '1px solid rgba(176,205,174,0.5)',
+                }}>
+                  {new Date(visibleDay + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
+                </div>
+                {statusByDay?.[visibleDay] && (
+                  <div
+                    title={statusByDay[visibleDay].detail}
+                    style={{
+                      padding: '3px 10px',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      color: statusByDay[visibleDay].color,
+                      background: `${statusByDay[visibleDay].color}18`,
+                      borderRadius: '999px',
+                      border: `1px solid ${statusByDay[visibleDay].color}55`,
+                    }}
+                  >
+                    Status: {statusByDay[visibleDay].label}
+                  </div>
+                )}
+              </div>
+            )}
             <ResponsiveContainer width="100%" height={showContributions && viewMode === 'subsystem' ? 400 : 340}>
               <ComposedChart
                 data={mergedChartData}
-                margin={{ top: 10, right: viewMode === 'sensor' ? 50 : 20, bottom: 5, left: 0 }}
+                margin={{ top: 10, right: viewMode === 'sensor' ? 50 : 20, bottom: allDaysMode ? 20 : 5, left: 0 }}
                 style={{ cursor: 'crosshair' }}
                 onMouseDown={handleZoomMouseDown}
                 onMouseMove={handleZoomMouseMove}
@@ -1199,14 +1329,39 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
                 onClick={handleChartClick}
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,230,200,0.4)" />
+                {dayBoundaries.map((b) => (
+                  <ReferenceLine key={`day-${b.day}`} x={b.idx} yAxisId="left" stroke="#F9A825" strokeWidth={2} strokeDasharray="8 4" />
+                ))}
                 <XAxis
                   dataKey="_idx" type="number" domain={['dataMin', 'dataMax']}
-                  ticks={xTicks} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false}
+                  ticks={xTicks} tickLine={false}
                   label={{ value: 'UTC', position: 'insideBottomRight', offset: -2, style: { fontSize: 9, fill: '#8A928A' } }}
-                  tickFormatter={(idx) => {
+                  tick={(props) => {
+                    const { x, y, payload } = props;
+                    const idx = payload.value;
                     const row = mergedChartData.find((r) => r._idx === idx) || mergedChartData[idx];
-                    if (!row) return '';
-                    return row.ts;
+                    if (!row) return null;
+                    let label = row.ts;
+                    let isDayLabel = false;
+                    if (allDaysMode) {
+                      const hour = (row.fullTs || '').substring(11, 16);
+                      if (hour === '00:00') {
+                        const d = new Date((row._day || '') + 'T00:00:00');
+                        label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                        isDayLabel = true;
+                      } else {
+                        label = hour;
+                      }
+                    }
+                    return (
+                      <g>
+                        <text x={x} y={y + 12} textAnchor="middle"
+                          fontSize={isDayLabel ? 11 : 9}
+                          fontWeight={isDayLabel ? 700 : 400}
+                          fill={isDayLabel ? '#F9A825' : '#8A928A'}
+                        >{label}</text>
+                      </g>
+                    );
                   }}
                 />
                 <YAxis yAxisId="left" domain={yDomain} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false} />
@@ -1349,6 +1504,8 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
                 )}
               </ComposedChart>
             </ResponsiveContainer>
+            </div>
+            </div>
 
 
 
