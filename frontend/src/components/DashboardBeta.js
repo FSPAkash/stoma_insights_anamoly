@@ -108,16 +108,24 @@ function DashboardBeta({ user, onLogout }) {
         lastNHours: timeFilter.lastNHours,
         startTime: timeFilter.startTime,
         endTime: timeFilter.endTime,
+        allDaysMode: timeFilter.allDaysMode,
       });
     }
     const startTs = String(zoom.start);
     const endTs = String(zoom.end);
-    const day = startTs.substring(0, 10);
-    const startHhmm = startTs.substring(11, 16);
-    const endHhmm = endTs.substring(11, 16);
-    timeFilter.handleDayChange(day);
-    timeFilter.setStartTime(startHhmm);
-    timeFilter.setEndTime(endHhmm);
+    const startDay = startTs.substring(0, 10);
+    const endDay = endTs.substring(0, 10);
+    if (startDay !== endDay) {
+      // Cross-day zoom: show the clicked day fully
+      const clickDay = zoom.clickDay || startDay;
+      timeFilter.handleDayChange(clickDay);
+    } else {
+      const startHhmm = startTs.substring(11, 16);
+      const endHhmm = endTs.substring(11, 16);
+      timeFilter.handleDayChange(startDay);
+      timeFilter.setStartTime(startHhmm);
+      timeFilter.setEndTime(endHhmm);
+    }
   }, [timeFilter, preZoomState]);
 
   const handleScrollDayChange = useCallback((day) => {
@@ -128,7 +136,9 @@ function DashboardBeta({ user, onLogout }) {
 
   const handleZoomReset = useCallback(() => {
     if (!preZoomState) return;
-    if (preZoomState.isLatestMode) {
+    if (preZoomState.allDaysMode) {
+      timeFilter.handleAllDaysClick();
+    } else if (preZoomState.isLatestMode) {
       timeFilter.handleLatestClick();
       timeFilter.setLastNHours(preZoomState.lastNHours);
     } else {

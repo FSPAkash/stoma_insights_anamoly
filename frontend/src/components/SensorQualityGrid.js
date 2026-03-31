@@ -518,8 +518,8 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
                       />
                     );
                   })}
-                  <Line yAxisId="left" type="monotone" dataKey="system_score" stroke="#1B5E20" strokeWidth={2} dot={false} name="System Score" />
-                  <Line yAxisId="left" type="monotone" dataKey="adaptive_threshold" stroke="#E65100" strokeWidth={1.5} strokeDasharray="6 3" dot={false} name="Adaptive Threshold" />
+                  <Line yAxisId="left" type="monotone" dataKey="system_score" stroke="#1B5E20" strokeWidth={1} dot={false} name="System Score" />
+                  <Line yAxisId="left" type="monotone" dataKey="adaptive_threshold" stroke="#E65100" strokeWidth={1} strokeDasharray="6 3" dot={false} name="Adaptive Threshold" />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -534,8 +534,8 @@ function PeakAlarmDetailModal({ fingerprint, onClose }) {
                 angle={90} domain={[0, Math.ceil(maxVal * 10) / 10]}
                 tick={{ fontSize: 8, fill: '#8A928A' }} tickCount={5}
               />
-              <Radar name="Normal baseline (0.5s)" dataKey="baseline" stroke="#1B5E20" fill="#1B5E20" fillOpacity={0.06} strokeWidth={1.5} strokeDasharray="5 3" dot={false} />
-              <Radar name="Fault fingerprint" dataKey="fault" stroke="#e74c3c" fill="#e74c3c" fillOpacity={0.15} strokeWidth={2} dot={{ r: 3, fill: '#e74c3c', strokeWidth: 0 }} />
+              <Radar name="Normal baseline (0.5s)" dataKey="baseline" stroke="#1B5E20" fill="#1B5E20" fillOpacity={0.06} strokeWidth={1} strokeDasharray="5 3" dot={false} />
+              <Radar name="Fault fingerprint" dataKey="fault" stroke="#e74c3c" fill="#e74c3c" fillOpacity={0.15} strokeWidth={1} dot={{ r: 3, fill: '#e74c3c', strokeWidth: 0 }} />
               <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} iconType="line" />
               <Tooltip content={<RadarTooltipContent />} />
             </RadarChart>
@@ -566,12 +566,8 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
   const fingerprints = fingerprintsProp || [];
   const [peakModalOpen, setPeakModalOpen] = useState(false);
 
-  const [refAreaLeft, setRefAreaLeft] = useState(null);
-  const [refAreaRight, setRefAreaRight] = useState(null);
   const qualityCacheRef = useRef({});
   const contribCacheRef = useRef({});
-  const isDraggingRef = useRef(false);
-  const dragStartRef = useRef(null);
   const scrollContainerRef = useRef(null);
   const [visibleDay, setVisibleDay] = useState(null);
 
@@ -904,6 +900,34 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
 
   const yDomain = viewMode === 'subsystem' ? subsystemYDomain : sensorYDomain;
 
+  // Day boundary indices for vertical separator lines
+  const dayBoundaries = useMemo(() => {
+    if (!allDaysMode || !chartData.length) return [];
+    const boundaries = [];
+    const seen = new Set();
+    for (const row of chartData) {
+      const ts = row.fullTs || '';
+      if (!ts) continue;
+      const day = ts.substring(0, 10);
+      if (!seen.has(day)) {
+        seen.add(day);
+        boundaries.push({ idx: row._idx, day });
+      }
+    }
+    return boundaries;
+  }, [allDaysMode, chartData]);
+
+  // Build a map of tick idx -> formatted day label for day-start ticks
+  const dayLabelMap = useMemo(() => {
+    if (!allDaysMode || !dayBoundaries.length) return {};
+    const map = {};
+    for (const b of dayBoundaries) {
+      const d = new Date(b.day + 'T00:00:00');
+      map[b.idx] = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+    return map;
+  }, [allDaysMode, dayBoundaries]);
+
   // Auto-derive tick interval from visible data density
   const xTicks = useMemo(() => {
     if (!chartData.length) return undefined;
@@ -911,12 +935,16 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
     const seen = new Set();
     const ticks = [];
     if (allDaysMode) {
-      // In all-days mode, show a tick every hour
+      // In all-days mode, show a tick every hour + ensure day boundaries are included
+      const dayFirstIdx = new Set(dayBoundaries.map((b) => b.idx));
       for (const row of chartData) {
         const ts = row.fullTs || '';
         if (!ts) continue;
         const key = ts.substring(0, 13); // YYYY-MM-DDTHH
-        if (!seen.has(key)) { seen.add(key); ticks.push(row._idx); }
+        if (!seen.has(key) || dayFirstIdx.has(row._idx)) {
+          seen.add(key);
+          if (!ticks.includes(row._idx)) ticks.push(row._idx);
+        }
       }
     } else {
       const granularity = n <= 60 ? 'minute' : 'hour';
@@ -928,25 +956,7 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
       }
     }
     return ticks;
-  }, [chartData, allDaysMode]);
-
-  // Day boundary indices for vertical separator lines
-  const dayBoundaries = useMemo(() => {
-    if (!allDaysMode || !chartData.length) return [];
-    const boundaries = [];
-    const seen = new Set();
-    for (const row of chartData) {
-      const ts = row.fullTs || '';
-      if (!ts) continue;
-      const hour = ts.substring(11, 13);
-      const day = ts.substring(0, 10);
-      if (hour === '00' && !seen.has(day)) {
-        seen.add(day);
-        boundaries.push({ idx: row._idx, day });
-      }
-    }
-    return boundaries;
-  }, [allDaysMode, chartData]);
+  }, [chartData, allDaysMode, dayBoundaries]);
 
   // Scrollable chart width: one day of data should span ~one viewport width
   const scrollChartWidth = useMemo(() => {
@@ -985,72 +995,67 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
     }
   }, [allDaysMode, chartData.length]);
 
-  const handleZoomMouseDown = useCallback((e) => {
-    if (e?.activeLabel != null) {
-      setRefAreaLeft(e.activeLabel);
-      dragStartRef.current = e.activeLabel;
-      isDraggingRef.current = false;
-    }
+  // Track mouse position to distinguish real clicks from scroll/drag gestures
+  const mouseDownPos = useRef(null);
+  const handleChartMouseDown = useCallback((evt) => {
+    mouseDownPos.current = { x: evt.clientX, y: evt.clientY };
+  }, []);
+  const handleChartMouseUp = useCallback((evt) => {
+    if (!mouseDownPos.current) return;
+    const dx = Math.abs(evt.clientX - mouseDownPos.current.x);
+    const dy = Math.abs(evt.clientY - mouseDownPos.current.y);
+    if (dx > 5 || dy > 5) mouseDownPos.current = null;
   }, []);
 
-  const handleZoomMouseMove = useCallback((e) => {
-    if (refAreaLeft != null && e?.activeLabel != null) {
-      setRefAreaRight(e.activeLabel);
-      if (dragStartRef.current != null && e.activeLabel !== dragStartRef.current) {
-        isDraggingRef.current = true;
-      }
-    }
-  }, [refAreaLeft]);
+  const handleChartClick = useCallback((e) => {
+    if (!mouseDownPos.current) return;
+    mouseDownPos.current = null;
+    if (!e || !e.activePayload || !e.activePayload.length) return;
+    const idx = e.activePayload[0]?.payload?._idx;
+    if (idx == null) return;
 
-  const handleZoomMouseUp = useCallback(() => {
-    if (refAreaLeft != null && refAreaRight != null && refAreaLeft !== refAreaRight) {
-      isDraggingRef.current = true;
-      const left = Math.min(refAreaLeft, refAreaRight);
-      const right = Math.max(refAreaLeft, refAreaRight);
-      if (onZoomChange) {
-        const leftRow = chartData.find((r) => r._idx === left) || chartData[left];
-        const rightRow = chartData.find((r) => r._idx === right) || chartData[right];
-        if (leftRow?.fullTs && rightRow?.fullTs) {
-          onZoomChange({ start: leftRow.fullTs, end: rightRow.fullTs });
+    // If clicking an alarm band, select the alert
+    if (showAlarms && onSelectAlert && alerts?.length) {
+      const band = visibleAlarmBands.find((candidate) => candidate && idx >= candidate.start && idx <= candidate.end);
+      if (band) {
+        const match = alerts.find((alert) => {
+          const alertStart = String(alert.start_ts || '').substring(0, 19);
+          const bandStart = String(band.rawStart || '').substring(0, 19);
+          const alertEnd = String(alert.end_ts || '').substring(0, 19);
+          const bandEnd = String(band.rawEnd || '').substring(0, 19);
+          return alert.class === selectedSystem && alertStart === bandStart && alertEnd === bandEnd;
+        });
+        if (match) { onSelectAlert(match); return; }
+
+        const row = e.activePayload[0]?.payload;
+        const pointTs = parseUtcMs(row?.fullTs);
+        if (pointTs != null) {
+          const overlapMatch = alerts.find((alert) => {
+            if (alert.class !== selectedSystem) return false;
+            const start = parseUtcMs(alert.start_ts || alert.event_start);
+            const end = parseUtcMs(alert.end_ts || alert.event_end || alert.start_ts || alert.event_start);
+            return start != null && end != null && start <= pointTs && pointTs <= end;
+          });
+          if (overlapMatch) { onSelectAlert(overlapMatch); return; }
         }
       }
     }
-    setRefAreaLeft(null);
-    setRefAreaRight(null);
-    dragStartRef.current = null;
-  }, [refAreaLeft, refAreaRight, onZoomChange, chartData]);
 
-  const handleChartClick = useCallback((e) => {
-    if (isDraggingRef.current) { isDraggingRef.current = false; return; }
-    if (!showAlarms || !e || !e.activePayload || !e.activePayload.length || !onSelectAlert || !alerts?.length) return;
-    const idx = e.activePayload[0]?.payload?._idx;
-    if (idx == null) return;
-    const band = visibleAlarmBands.find((candidate) => candidate && idx >= candidate.start && idx <= candidate.end);
-    if (!band) return;
-
-    const match = alerts.find((alert) => {
-      const alertStart = String(alert.start_ts || '').substring(0, 19);
-      const bandStart = String(band.rawStart || '').substring(0, 19);
-      const alertEnd = String(alert.end_ts || '').substring(0, 19);
-      const bandEnd = String(band.rawEnd || '').substring(0, 19);
-      return alert.class === selectedSystem && alertStart === bandStart && alertEnd === bandEnd;
-    });
-    if (match) {
-      onSelectAlert(match);
-      return;
+    // Click-to-zoom: zoom in 2x centered on clicked point
+    if (!onZoomChange || !chartData.length) return;
+    const n = chartData.length;
+    const windowSize = Math.max(Math.floor(n / 2), 10);
+    const half = Math.floor(windowSize / 2);
+    let left = Math.max(0, idx - half);
+    let right = Math.min(n - 1, left + windowSize);
+    if (right === n - 1) left = Math.max(0, right - windowSize);
+    const leftRow = chartData[left];
+    const rightRow = chartData[right];
+    if (leftRow?.fullTs && rightRow?.fullTs) {
+      const clickedRow = chartData.find(r => r._idx === idx) || chartData[idx];
+      onZoomChange({ start: leftRow.fullTs, end: rightRow.fullTs, clickDay: clickedRow?._day });
     }
-
-    const row = e.activePayload[0]?.payload;
-    const pointTs = parseUtcMs(row?.fullTs);
-    if (pointTs == null) return;
-    const overlapMatch = alerts.find((alert) => {
-      if (alert.class !== selectedSystem) return false;
-      const start = parseUtcMs(alert.start_ts || alert.event_start);
-      const end = parseUtcMs(alert.end_ts || alert.event_end || alert.start_ts || alert.event_start);
-      return start != null && end != null && start <= pointTs && pointTs <= end;
-    });
-    if (overlapMatch) onSelectAlert(overlapMatch);
-  }, [showAlarms, onSelectAlert, alerts, visibleAlarmBands, selectedSystem]);
+  }, [showAlarms, onSelectAlert, alerts, visibleAlarmBands, selectedSystem, onZoomChange, chartData]);
 
   const hasSubsystemData = subsystemChartData.length > 0;
   const hasSensorData = sensorChartData.length > 0;
@@ -1258,18 +1263,25 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
               >
                 <span>Show Anomalies</span>
               </div>
-              {isZoomed && onZoomReset && (
-                <div onClick={onZoomReset} style={{
-                  display: 'inline-flex', alignItems: 'center', gap: '6px',
-                  fontSize: '10px', padding: '4px 12px', borderRadius: '20px', cursor: 'pointer',
-                  border: '1.5px solid rgba(27,94,32,0.4)', background: 'rgba(27,94,32,0.06)',
-                  color: '#1B5E20', fontWeight: 600, transition: 'all 0.2s',
-                }}>
-                  <span>Reset zoom</span>
-                  <span style={{ fontSize: '12px', opacity: 0.6 }}>x</span>
-                </div>
-              )}
-
+              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {!isZoomed && (
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '9px', color: '#8A928A', opacity: 0.7 }}>
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#8A928A" strokeWidth="2"><circle cx="6.5" cy="6.5" r="4.5"/><line x1="10" y1="10" x2="14" y2="14"/></svg>
+                    <span>Click to zoom</span>
+                  </div>
+                )}
+                {isZoomed && onZoomReset && (
+                  <div onClick={onZoomReset} style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '5px',
+                    fontSize: '10px', padding: '3px 10px', borderRadius: '14px', cursor: 'pointer',
+                    border: '1.5px solid rgba(27,94,32,0.4)', background: 'rgba(27,94,32,0.06)',
+                    color: '#1B5E20', fontWeight: 600, transition: 'all 0.2s',
+                  }}>
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#1B5E20" strokeWidth="2"><circle cx="6.5" cy="6.5" r="4.5"/><line x1="10" y1="10" x2="14" y2="14"/><line x1="4.5" y1="6.5" x2="8.5" y2="6.5"/></svg>
+                    <span>Reset zoom</span>
+                  </div>
+                )}
+              </div>
             </div>
             <div
               ref={scrollContainerRef}
@@ -1277,8 +1289,11 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
               style={allDaysMode ? { overflowX: 'auto', overflowY: 'hidden', width: '100%', position: 'relative' } : {}}
             >
             <div style={allDaysMode ? { width: `${scrollChartWidth}px`, minWidth: '100%' } : {}}>
-            {/* Date + status callout banner for allDaysMode (status for the visible day only) */}
-            {allDaysMode && visibleDay && (
+            {/* Date + status callout banner */}
+            {(() => {
+              const displayDay = allDaysMode ? visibleDay : selectedDay;
+              if (!displayDay) return null;
+              return (
               <div style={{
                 position: 'sticky',
                 left: 0,
@@ -1298,39 +1313,40 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
                   borderRadius: '6px',
                   border: '1px solid rgba(176,205,174,0.5)',
                 }}>
-                  {new Date(visibleDay + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
+                  {new Date(displayDay + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
                 </div>
-                {statusByDay?.[visibleDay] && (
+                {statusByDay?.[displayDay] && (
                   <div
-                    title={statusByDay[visibleDay].detail}
+                    title={statusByDay[displayDay].detail}
                     style={{
                       padding: '3px 10px',
                       fontSize: '11px',
                       fontWeight: 600,
-                      color: statusByDay[visibleDay].color,
-                      background: `${statusByDay[visibleDay].color}18`,
+                      color: statusByDay[displayDay].color,
+                      background: `${statusByDay[displayDay].color}18`,
                       borderRadius: '999px',
-                      border: `1px solid ${statusByDay[visibleDay].color}55`,
+                      border: `1px solid ${statusByDay[displayDay].color}55`,
                     }}
                   >
-                    Status: {statusByDay[visibleDay].label}
+                    Status: {statusByDay[displayDay].label}
                   </div>
                 )}
               </div>
-            )}
+              );
+            })()}
+            <div onMouseDown={handleChartMouseDown} onMouseUp={handleChartMouseUp}>
             <ResponsiveContainer width="100%" height={showContributions && viewMode === 'subsystem' ? 400 : 340}>
               <ComposedChart
                 data={mergedChartData}
                 margin={{ top: 10, right: viewMode === 'sensor' ? 50 : 20, bottom: allDaysMode ? 20 : 5, left: 0 }}
-                style={{ cursor: 'crosshair' }}
-                onMouseDown={handleZoomMouseDown}
-                onMouseMove={handleZoomMouseMove}
-                onMouseUp={handleZoomMouseUp}
+                style={{ cursor: 'zoom-in' }}
                 onClick={handleChartClick}
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,230,200,0.4)" />
                 {dayBoundaries.map((b) => (
-                  <ReferenceLine key={`day-${b.day}`} x={b.idx} yAxisId="left" stroke="#F9A825" strokeWidth={2} strokeDasharray="8 4" />
+                  <ReferenceLine key={`day-${b.day}`} x={b.idx} yAxisId="left" stroke="#F9A825" strokeWidth={2} strokeDasharray="8 4"
+                    label={{ value: dayLabelMap[b.idx] || '', position: 'insideTopLeft', style: { fontSize: 11, fontWeight: 700, fill: '#F9A825' }, offset: 4 }}
+                  />
                 ))}
                 <XAxis
                   dataKey="_idx" type="number" domain={['dataMin', 'dataMax']}
@@ -1344,14 +1360,7 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
                     let label = row.ts;
                     let isDayLabel = false;
                     if (allDaysMode) {
-                      const hour = (row.fullTs || '').substring(11, 16);
-                      if (hour === '00:00') {
-                        const d = new Date((row._day || '') + 'T00:00:00');
-                        label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                        isDayLabel = true;
-                      } else {
-                        label = hour;
-                      }
+                      label = (row.fullTs || '').substring(11, 16);
                     }
                     return (
                       <g>
@@ -1433,7 +1442,7 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
                       type="monotone"
                       dataKey="system_score"
                       stroke="#1B5E20"
-                      strokeWidth={2}
+                      strokeWidth={1}
                       dot={false}
                       name="System Score"
                       animationDuration={600}
@@ -1444,7 +1453,7 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
                       type="monotone"
                       dataKey="adaptive_threshold"
                       stroke="#E65100"
-                      strokeWidth={1.5}
+                      strokeWidth={1}
                       strokeDasharray="6 3"
                       dot={false}
                       name="Adaptive Threshold"
@@ -1461,7 +1470,7 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
                     type="monotone"
                     dataKey="_avgSqsPct"
                     stroke={SQS_COLOR}
-                    strokeWidth={2}
+                    strokeWidth={1}
                     dot={(props) => {
                       const { cx, cy, payload } = props;
                       if (!payload?._sqsDegraded?.length) return null;
@@ -1484,7 +1493,7 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
                       type="monotone"
                       dataKey={`${s}__${activeMetric}`}
                       stroke={SENSOR_PALETTE[i % SENSOR_PALETTE.length]}
-                      strokeWidth={1.5}
+                      strokeWidth={1}
                       dot={false}
                       name={formatSensorName(s)}
                       animationDuration={600}
@@ -1493,17 +1502,9 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
                   ) : null
                 )}
 
-                {/* Drag selection highlight */}
-                {refAreaLeft != null && refAreaRight != null && (
-                  <ReferenceArea
-                    yAxisId="left"
-                    x1={refAreaLeft} x2={refAreaRight}
-                    strokeOpacity={0.3}
-                    fill="rgba(27,94,32,0.15)"
-                  />
-                )}
               </ComposedChart>
             </ResponsiveContainer>
+            </div>
             </div>
             </div>
 

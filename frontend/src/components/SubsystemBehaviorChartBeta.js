@@ -175,18 +175,16 @@ const CustomTooltip = ({ active, payload, downtimeBands, alarmBands, alarmView }
 
 function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, startTime, endTime, onZoomChange, onZoomReset, isZoomed, onSelectAlert, subsystems: subsystemsProp, allDaysMode, onScrollDayChange, hasData = true, statusByDay = {} }) {
   const alarmView = 'span';
-  const subsystems = useMemo(() => (subsystemsProp || []).filter(s => s.system_id !== 'ISOLATED'), [subsystemsProp]);
+  const regularSubsystems = useMemo(() => (subsystemsProp || []).filter(s => s.system_id !== 'ISOLATED'), [subsystemsProp]);
+  const isolatedSubsystems = useMemo(() => (subsystemsProp || []).filter(s => s.system_id === 'ISOLATED'), [subsystemsProp]);
+  const subsystems = useMemo(() => [...regularSubsystems, ...isolatedSubsystems], [regularSubsystems, isolatedSubsystems]);
   const [selectedSystem, setSelectedSystem] = useState(null);
   const [sensorData, setSensorData] = useState(null);
   const [alerts, setAlerts] = useState([]);
   const [alertsLoading, setAlertsLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [visibleSensors, setVisibleSensors] = useState({});
-  const [refAreaLeft, setRefAreaLeft] = useState(null);
-  const [refAreaRight, setRefAreaRight] = useState(null);
   const behaviorCacheRef = useRef({});
-  const isDraggingRef = useRef(false);
-  const dragStartRef = useRef(null);
 
   useEffect(() => {
     if (subsystems.length > 0 && !selectedSystem) setSelectedSystem(subsystems[0].system_id);
@@ -369,37 +367,67 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
   const hasLowAlarms = alarmBands.some((band) => band && band.severity === 'LOW');
   const hasMixedAlarms = alarmBands.some((band) => band && band.severity === 'MIXED');
 
+  // Track mouse position to distinguish real clicks from scroll/drag gestures
+  const mouseDownPos = useRef(null);
+  const handleChartMouseDown = useCallback((evt) => {
+    mouseDownPos.current = { x: evt.clientX, y: evt.clientY };
+  }, []);
+  const handleChartMouseUp = useCallback((evt) => {
+    if (!mouseDownPos.current) return;
+    const dx = Math.abs(evt.clientX - mouseDownPos.current.x);
+    const dy = Math.abs(evt.clientY - mouseDownPos.current.y);
+    // If the mouse moved more than 5px, it was a drag/scroll, not a click
+    if (dx > 5 || dy > 5) mouseDownPos.current = null;
+  }, []);
+
   const handleChartClick = useCallback((e) => {
-    if (isDraggingRef.current) { isDraggingRef.current = false; return; }
-    if (!e || !e.activePayload || !e.activePayload.length || !onSelectAlert || !alerts?.length) return;
+    // Reject if mouseDown was cleared by mouseUp (drag/scroll gesture)
+    if (!mouseDownPos.current) return;
+    mouseDownPos.current = null;
+    if (!e || !e.activePayload || !e.activePayload.length) return;
     const idx = e.activePayload[0]?.payload?._idx;
     if (idx == null) return;
-    const band = alarmBands.find((candidate) => candidate && idx >= candidate.start && idx <= candidate.end);
-    if (!band) return;
 
-    const match = alerts.find((alert) => {
-      const alertStart = String(alert.start_ts || '').substring(0, 19);
-      const bandStart = String(band.rawStart || '').substring(0, 19);
-      const alertEnd = String(alert.end_ts || '').substring(0, 19);
-      const bandEnd = String(band.rawEnd || '').substring(0, 19);
-      return alert.class === selectedSystem && alertStart === bandStart && alertEnd === bandEnd;
-    });
-    if (match) {
-      onSelectAlert(match);
-      return;
+    // If clicking an alarm band, select the alert
+    const band = alarmBands.find((candidate) => candidate && idx >= candidate.start && idx <= candidate.end);
+    if (band && onSelectAlert && alerts?.length) {
+      const match = alerts.find((alert) => {
+        const alertStart = String(alert.start_ts || '').substring(0, 19);
+        const bandStart = String(band.rawStart || '').substring(0, 19);
+        const alertEnd = String(alert.end_ts || '').substring(0, 19);
+        const bandEnd = String(band.rawEnd || '').substring(0, 19);
+        return alert.class === selectedSystem && alertStart === bandStart && alertEnd === bandEnd;
+      });
+      if (match) { onSelectAlert(match); return; }
+
+      const row = e.activePayload[0]?.payload;
+      const pointTs = parseUtcMs(row?.fullTs);
+      if (pointTs != null) {
+        const overlapMatch = alerts.find((alert) => {
+          if (alert.class !== selectedSystem) return false;
+          const start = parseUtcMs(alert.start_ts || alert.event_start);
+          const end = parseUtcMs(alert.end_ts || alert.event_end || alert.start_ts || alert.event_start);
+          return start != null && end != null && start <= pointTs && pointTs <= end;
+        });
+        if (overlapMatch) { onSelectAlert(overlapMatch); return; }
+      }
     }
 
-    const row = e.activePayload[0]?.payload;
-    const pointTs = parseUtcMs(row?.fullTs);
-    if (pointTs == null) return;
-    const overlapMatch = alerts.find((alert) => {
-      if (alert.class !== selectedSystem) return false;
-      const start = parseUtcMs(alert.start_ts || alert.event_start);
-      const end = parseUtcMs(alert.end_ts || alert.event_end || alert.start_ts || alert.event_start);
-      return start != null && end != null && start <= pointTs && pointTs <= end;
-    });
-    if (overlapMatch) onSelectAlert(overlapMatch);
-  }, [alarmBands, alerts, onSelectAlert, selectedSystem]);
+    // Click-to-zoom: zoom in 2x centered on clicked point
+    if (!onZoomChange || !chartData.length) return;
+    const n = chartData.length;
+    const windowSize = Math.max(Math.floor(n / 2), 10);
+    const half = Math.floor(windowSize / 2);
+    let left = Math.max(0, idx - half);
+    let right = Math.min(n - 1, left + windowSize);
+    if (right === n - 1) left = Math.max(0, right - windowSize);
+    const leftRow = chartData[left];
+    const rightRow = chartData[right];
+    if (leftRow?.fullTs && rightRow?.fullTs) {
+      const clickedRow = chartData.find(r => r._idx === idx) || chartData[idx];
+      onZoomChange({ start: leftRow.fullTs, end: rightRow.fullTs, clickDay: clickedRow?._day });
+    }
+  }, [alarmBands, alerts, onSelectAlert, selectedSystem, onZoomChange, chartData]);
 
   const yDomain = useMemo(() => {
     if (!chartData.length || !sensors.length) return ['auto', 'auto'];
@@ -426,9 +454,36 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
     if (!vals.length) return [0, 0.3];
     vals.sort((a, b) => a - b);
     const p95 = vals[Math.floor(vals.length * 0.95)];
-    const hi = Math.min(1, Math.ceil((p95 * 1.5) * 100) / 100);
-    return [0, Math.max(hi, 0.15)];
+    const hi = Math.ceil(p95 * 1.15);
+    return [0, Math.max(hi, 1)];
   }, [chartData, sensors, visibleSensors]);
+
+  // Day boundary indices for vertical separator lines
+  const dayBoundaries = useMemo(() => {
+    if (!allDaysMode || !chartData.length) return [];
+    const boundaries = [];
+    const seen = new Set();
+    for (const row of chartData) {
+      const ts = row.fullTs || '';
+      if (!ts) continue;
+      const day = ts.substring(0, 10);
+      if (!seen.has(day)) {
+        seen.add(day);
+        boundaries.push({ idx: row._idx, day });
+      }
+    }
+    return boundaries;
+  }, [allDaysMode, chartData]);
+
+  const dayLabelMap = useMemo(() => {
+    if (!allDaysMode || !dayBoundaries.length) return {};
+    const map = {};
+    for (const b of dayBoundaries) {
+      const d = new Date(b.day + 'T00:00:00');
+      map[b.idx] = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+    return map;
+  }, [allDaysMode, dayBoundaries]);
 
   const xTicks = useMemo(() => {
     if (!chartData.length) return undefined;
@@ -436,12 +491,16 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
     const seen = new Set();
     const ticks = [];
     if (allDaysMode) {
-      // Show a tick every hour
+      // Show a tick every hour + ensure day boundaries are included
+      const dayFirstIdx = new Set(dayBoundaries.map((b) => b.idx));
       for (const row of chartData) {
         const ts = row.fullTs || '';
         if (!ts) continue;
         const key = ts.substring(0, 13);
-        if (!seen.has(key)) { seen.add(key); ticks.push(row._idx); }
+        if (!seen.has(key) || dayFirstIdx.has(row._idx)) {
+          seen.add(key);
+          if (!ticks.includes(row._idx)) ticks.push(row._idx);
+        }
       }
     } else {
       const granularity = n <= 60 ? 'minute' : 'hour';
@@ -453,25 +512,7 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
       }
     }
     return ticks;
-  }, [chartData, allDaysMode]);
-
-  // Day boundary indices for vertical separator lines
-  const dayBoundaries = useMemo(() => {
-    if (!allDaysMode || !chartData.length) return [];
-    const boundaries = [];
-    const seen = new Set();
-    for (const row of chartData) {
-      const ts = row.fullTs || '';
-      if (!ts) continue;
-      const hour = ts.substring(11, 13);
-      const day = ts.substring(0, 10);
-      if (hour === '00' && !seen.has(day)) {
-        seen.add(day);
-        boundaries.push({ idx: row._idx, day });
-      }
-    }
-    return boundaries;
-  }, [allDaysMode, chartData]);
+  }, [chartData, allDaysMode, dayBoundaries]);
 
   // Scroll infrastructure for allDaysMode
   const scrollContainerRef = useRef(null);
@@ -509,40 +550,6 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
     }
   }, [allDaysMode, scrollChartWidth]);
 
-  const handleZoomMouseDown = useCallback((e) => {
-    if (e?.activeLabel != null) {
-      setRefAreaLeft(e.activeLabel);
-      dragStartRef.current = e.activeLabel;
-      isDraggingRef.current = false;
-    }
-  }, []);
-
-  const handleZoomMouseMove = useCallback((e) => {
-    if (refAreaLeft != null && e?.activeLabel != null) {
-      setRefAreaRight(e.activeLabel);
-      if (dragStartRef.current != null && e.activeLabel !== dragStartRef.current) {
-        isDraggingRef.current = true;
-      }
-    }
-  }, [refAreaLeft]);
-
-  const handleZoomMouseUp = useCallback(() => {
-    if (refAreaLeft != null && refAreaRight != null && refAreaLeft !== refAreaRight) {
-      isDraggingRef.current = true;
-      const left = Math.min(refAreaLeft, refAreaRight);
-      const right = Math.max(refAreaLeft, refAreaRight);
-      if (onZoomChange) {
-        const leftRow = chartData.find((r) => r._idx === left) || chartData[left];
-        const rightRow = chartData.find((r) => r._idx === right) || chartData[right];
-        if (leftRow?.fullTs && rightRow?.fullTs) {
-          onZoomChange({ start: leftRow.fullTs, end: rightRow.fullTs });
-        }
-      }
-    }
-    setRefAreaLeft(null);
-    setRefAreaRight(null);
-    dragStartRef.current = null;
-  }, [refAreaLeft, refAreaRight, onZoomChange, chartData]);
 
   if (!hasData) {
     return (
@@ -560,22 +567,10 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
       <div style={styles.heading}>
         Subsystem Behavior
         <InfoTooltip text="Live sensor traces for each subsystem. Gray bands indicate downtime. Colored overlays indicate dynamic contiguous anomaly spans built from source minute-level anomalies." />
-        {isZoomed && onZoomReset && (
-          <div onClick={onZoomReset} style={{
-            marginLeft: 'auto',
-            display: 'inline-flex', alignItems: 'center', gap: '6px',
-            fontSize: '10px', padding: '4px 12px', borderRadius: '20px', cursor: 'pointer',
-            border: '1.5px solid rgba(27,94,32,0.4)', background: 'rgba(27,94,32,0.06)',
-            color: '#1B5E20', fontWeight: 600, transition: 'all 0.2s',
-          }}>
-            <span>Reset zoom</span>
-            <span style={{ fontSize: '12px', opacity: 0.6 }}>x</span>
-          </div>
-        )}
       </div>
 
       <div style={styles.tabRow}>
-        {subsystems.map((sys, idx) => {
+        {regularSubsystems.map((sys, idx) => {
           const color = systemColor(sys.system_id, idx);
           return (
             <div key={sys.system_id} style={styles.tab(selectedSystem === sys.system_id, color)}
@@ -584,6 +579,20 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
             </div>
           );
         })}
+        {isolatedSubsystems.length > 0 && (
+          <>
+            <div style={{ width: '1px', background: 'rgba(120,120,120,0.25)', margin: '2px 4px', alignSelf: 'stretch' }} />
+            {isolatedSubsystems.map((sys) => {
+              const color = '#757575';
+              return (
+                <div key={sys.system_id} style={styles.tab(selectedSystem === sys.system_id, color)}
+                  onClick={() => setSelectedSystem(sys.system_id)}>
+                  Isolated ({sys.sensor_count})
+                </div>
+              );
+            })}
+          </>
+        )}
       </div>
 
       <div style={{ ...styles.chartContainer, position: 'relative' }}>
@@ -653,13 +662,35 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
                   <span style={{ fontWeight: 600 }}>Mixed Span</span>
                 </div>
               )}
+              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {!isZoomed && (
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '9px', color: '#8A928A', opacity: 0.7 }}>
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#8A928A" strokeWidth="2"><circle cx="6.5" cy="6.5" r="4.5"/><line x1="10" y1="10" x2="14" y2="14"/></svg>
+                    <span>Click to zoom</span>
+                  </div>
+                )}
+                {isZoomed && onZoomReset && (
+                  <div onClick={onZoomReset} style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '5px',
+                    fontSize: '10px', padding: '3px 10px', borderRadius: '14px', cursor: 'pointer',
+                    border: '1.5px solid rgba(27,94,32,0.4)', background: 'rgba(27,94,32,0.06)',
+                    color: '#1B5E20', fontWeight: 600, transition: 'all 0.2s',
+                  }}>
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#1B5E20" strokeWidth="2"><circle cx="6.5" cy="6.5" r="4.5"/><line x1="10" y1="10" x2="14" y2="14"/><line x1="4.5" y1="6.5" x2="8.5" y2="6.5"/></svg>
+                    <span>Reset zoom</span>
+                  </div>
+                )}
+              </div>
             </div>
             </div>
 
             <div ref={scrollContainerRef} onScroll={handleChartScroll}
               style={allDaysMode ? { overflowX: 'auto', overflowY: 'hidden', width: '100%' } : {}}>
             <div style={allDaysMode ? { width: `${scrollChartWidth}px`, minWidth: '100%' } : {}}>
-            {allDaysMode && visibleDay && (
+            {(() => {
+              const displayDay = allDaysMode ? visibleDay : selectedDay;
+              if (!displayDay) return null;
+              return (
               <div style={{
                 position: 'sticky',
                 left: 0,
@@ -679,39 +710,40 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
                   border: '1px solid rgba(203,230,200,0.5)',
                   borderRadius: '6px',
                 }}>
-                  {new Date(visibleDay + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                  {new Date(displayDay + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
                 </div>
-                {statusByDay?.[visibleDay] && (
+                {statusByDay?.[displayDay] && (
                   <div
-                    title={statusByDay[visibleDay].detail}
+                    title={statusByDay[displayDay].detail}
                     style={{
                       padding: '3px 10px',
                       fontSize: '11px',
                       fontWeight: 600,
-                      color: statusByDay[visibleDay].color,
-                      background: `${statusByDay[visibleDay].color}18`,
+                      color: statusByDay[displayDay].color,
+                      background: `${statusByDay[displayDay].color}18`,
                       borderRadius: '999px',
-                      border: `1px solid ${statusByDay[visibleDay].color}55`,
+                      border: `1px solid ${statusByDay[displayDay].color}55`,
                     }}
                   >
-                    Status: {statusByDay[visibleDay].label}
+                    Status: {statusByDay[displayDay].label}
                   </div>
                 )}
               </div>
-            )}
+              );
+            })()}
+            <div onMouseDown={handleChartMouseDown} onMouseUp={handleChartMouseUp}>
             <ResponsiveContainer width="100%" height={340}>
               <ComposedChart
                 data={chartData}
                 margin={{ top: 10, right: 20, bottom: 5, left: 0 }}
-                style={{ cursor: 'crosshair' }}
-                onMouseDown={handleZoomMouseDown}
-                onMouseMove={handleZoomMouseMove}
-                onMouseUp={handleZoomMouseUp}
+                style={{ cursor: 'zoom-in' }}
                 onClick={handleChartClick}
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(203,230,200,0.4)" />
                 {dayBoundaries.map((b) => (
-                  <ReferenceLine key={`day-${b.day}`} x={b.idx} stroke="#F9A825" strokeWidth={2} strokeDasharray="8 4" />
+                  <ReferenceLine key={`day-${b.day}`} x={b.idx} stroke="#F9A825" strokeWidth={2} strokeDasharray="8 4"
+                    label={{ value: dayLabelMap[b.idx] || '', position: 'insideTopLeft', style: { fontSize: 11, fontWeight: 700, fill: '#F9A825' }, offset: 4 }}
+                  />
                 ))}
                 <XAxis
                   dataKey="_idx" type="number" domain={['dataMin', 'dataMax']}
@@ -725,14 +757,7 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
                     let label = row.ts;
                     let isDayLabel = false;
                     if (allDaysMode && row.fullTs) {
-                      const hour = row.fullTs.substring(11, 16);
-                      if (hour === '00:00') {
-                        const d = new Date(row._day + 'T00:00:00');
-                        label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                        isDayLabel = true;
-                      } else {
-                        label = hour;
-                      }
+                      label = row.fullTs.substring(11, 16);
                     }
                     return (
                       <g>
@@ -745,7 +770,7 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
                     );
                   }}
                 />
-                <YAxis domain={yDomain} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false} />
+                <YAxis domain={yDomain} allowDataOverflow={true} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false} />
                 <Tooltip content={<CustomTooltip downtimeBands={downtimeBands} alarmBands={alarmBands} alarmView={alarmView} />} />
 
                 {/* Downtime bands - prominent solid gray */}
@@ -786,7 +811,7 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
                       type="monotone"
                       dataKey={s}
                       stroke={SENSOR_PALETTE[i % SENSOR_PALETTE.length]}
-                      strokeWidth={1.5}
+                      strokeWidth={1}
                       dot={false}
                       name={formatSensorName(s)}
                       animationDuration={600}
@@ -795,16 +820,9 @@ function SubsystemBehaviorChartBeta({ selectedDay, isLatestMode, lastNHours, sta
                   ) : null
                 )}
 
-                {/* Drag selection highlight */}
-                {refAreaLeft != null && refAreaRight != null && (
-                  <ReferenceArea
-                    x1={refAreaLeft} x2={refAreaRight}
-                    strokeOpacity={0.3}
-                    fill="rgba(27,94,32,0.15)"
-                  />
-                )}
               </ComposedChart>
             </ResponsiveContainer>
+            </div>
             </div>
             </div>
 
