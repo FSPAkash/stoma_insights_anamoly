@@ -862,13 +862,19 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
   const hasLowAlarms = visibleAlarmBands.some((band) => band && band.severity === 'LOW');
   const hasMixedAlarms = visibleAlarmBands.some((band) => band && band.severity === 'MIXED');
 
+  // Visible chart rows -- scope y-domain to visible day in allDaysMode for dynamic scaling
+  const visibleChartData = useMemo(() => {
+    if (!allDaysMode || !visibleDay) return chartData;
+    return chartData.filter(r => r._day === visibleDay);
+  }, [chartData, allDaysMode, visibleDay]);
+
   // Y-domain for sensor view (Engine A/B only, SQS is shown as heatstrip)
   const sensorYDomain = useMemo(() => {
-    if (viewMode !== 'sensor' || !chartData.length || !sensors.length) return [0, 0.3];
+    if (viewMode !== 'sensor' || !visibleChartData.length || !sensors.length) return [0, 0.3];
     const activeSensors = sensors.filter((s) => visibleSensors[s]);
     if (!activeSensors.length) return [0, 0.3];
     const vals = [];
-    for (const row of chartData) {
+    for (const row of visibleChartData) {
       for (const s of activeSensors) {
         const v = row[`${s}__${activeMetric}`];
         if (v != null && isFinite(v)) vals.push(v);
@@ -879,13 +885,13 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
     const p95 = vals[Math.floor(vals.length * 0.95)];
     const hi = Math.min(1, Math.ceil((p95 * 1.5) * 100) / 100);
     return [0, Math.max(hi, 0.15)];
-  }, [chartData, sensors, visibleSensors, activeMetric, viewMode]);
+  }, [visibleChartData, sensors, visibleSensors, activeMetric, viewMode]);
 
   // Y-domain for subsystem view
   const subsystemYDomain = useMemo(() => {
-    if (viewMode !== 'subsystem' || !chartData.length) return [0, 0.3];
+    if (viewMode !== 'subsystem' || !visibleChartData.length) return [0, 0.3];
     const vals = [];
-    for (const row of chartData) {
+    for (const row of visibleChartData) {
       for (const key of ['system_score', 'adaptive_threshold']) {
         const v = row[key];
         if (v != null && isFinite(v)) vals.push(v);
@@ -896,9 +902,22 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
     const p95 = vals[Math.floor(vals.length * 0.95)];
     const hi = Math.min(1, Math.ceil((p95 * 1.5) * 100) / 100);
     return [0, Math.max(hi, 0.15)];
-  }, [chartData, viewMode]);
+  }, [visibleChartData, viewMode]);
 
   const yDomain = viewMode === 'subsystem' ? subsystemYDomain : sensorYDomain;
+
+  // Generate y-axis ticks that fit the dynamic domain
+  const yTicks = useMemo(() => {
+    const max = yDomain[1];
+    if (max <= 0) return [0];
+    // Pick ~4-5 ticks spread across the range
+    const count = 5;
+    const ticks = [];
+    for (let i = 0; i <= count; i++) {
+      ticks.push(Math.round((max * i / count) * 1000) / 1000);
+    }
+    return ticks;
+  }, [yDomain]);
 
   // Day boundary indices for vertical separator lines
   const dayBoundaries = useMemo(() => {
@@ -1373,7 +1392,7 @@ function SensorQualityGrid({ onSelectAlert, selectedDay, isLatestMode, lastNHour
                     );
                   }}
                 />
-                <YAxis yAxisId="left" domain={yDomain} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false} />
+                <YAxis yAxisId="left" domain={yDomain} allowDataOverflow={true} ticks={yTicks} tick={{ fontSize: 10, fill: '#8A928A' }} tickLine={false} />
                 {viewMode === 'sensor' && (
                   <YAxis
                     yAxisId="right" orientation="right"
