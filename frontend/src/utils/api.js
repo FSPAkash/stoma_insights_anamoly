@@ -135,7 +135,16 @@ export const getBetaRadarFingerprints = () =>
 export const getBetaSensorContributions = (systemId, downsample = 1) =>
   api.get(`/beta/sensor_contributions/${encodeURIComponent(systemId)}`, { params: { downsample } });
 
+export const getBetaStandaloneSensors = () =>
+  dedupGet('/beta/standalone_sensors');
+
+export const getBetaStandaloneSensor = (sensor, downsample = 1) =>
+  api.get(`/beta/standalone_sensor/${encodeURIComponent(sensor)}`, { params: { downsample } });
+
 export const getBetaRiskDecompositionForEpisode = (startTs, endTs) =>
   dedupGet('/beta/risk_decomposition/episode', { params: { start_ts: startTs, end_ts: endTs } });
+
+export const getBetaStandaloneAlarmDetail = (sensor, startTs, endTs) =>
+  api.get(`/beta/standalone_alarm_detail/${encodeURIComponent(sensor)}`, { params: { start_ts: startTs, end_ts: endTs } });
 
 export default api;

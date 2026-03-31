@@ -2471,6 +2471,246 @@ def beta_risk_decomposition_episode():
     return jsonify({"decomposition": df.to_dict(orient="records"), "flow_data": flow_data})
 
 
+STANDALONE_DATA_DIR = os.path.join(BETA_DATA_DIR, "standalone_outputs")
+_standalone_cache = {}
+_standalone_mtime = {}
+
+
+def standalone_load(filename):
+    """Load a file from standalone_outputs, preferring parquet. Cached."""
+    if filename in _standalone_cache:
+        csv_path = os.path.join(STANDALONE_DATA_DIR, filename)
+        parquet_name = filename.rsplit(".", 1)[0] + ".parquet" if filename.endswith(".csv") else filename
+        parquet_path = os.path.join(STANDALONE_DATA_DIR, parquet_name)
+        check_path = parquet_path if os.path.exists(parquet_path) else csv_path
+        try:
+            mtime = os.path.getmtime(check_path)
+            if _standalone_mtime.get(filename) == mtime:
+                return _standalone_cache[filename]
+        except Exception:
+            return _standalone_cache[filename]
+    parquet_name = filename.rsplit(".", 1)[0] + ".parquet" if filename.endswith(".csv") else filename
+    parquet_path = os.path.join(STANDALONE_DATA_DIR, parquet_name)
+    csv_path = os.path.join(STANDALONE_DATA_DIR, filename)
+    try:
+        if os.path.exists(parquet_path):
+            df = pd.read_parquet(parquet_path)
+            if df.index.name and df.index.name not in df.columns:
+                df = df.reset_index()
+            _standalone_cache[filename] = df
+            _standalone_mtime[filename] = os.path.getmtime(parquet_path)
+            return df
+        if os.path.exists(csv_path):
+            df = pd.read_csv(csv_path)
+            _standalone_cache[filename] = df
+            _standalone_mtime[filename] = os.path.getmtime(csv_path)
+            return df
+    except Exception as e:
+        print(f"Error loading standalone {filename}: {e}")
+    return pd.DataFrame()
+
+
+@app.route("/api/beta/standalone_sensors", methods=["GET"])
+def beta_standalone_sensors():
+    """Return list of standalone sensors with metadata from summary."""
+    summary_df = standalone_load("standalone_summary.csv")
+    if summary_df.empty:
+        return jsonify({"sensors": []})
+    summary_df = sanitize_df(summary_df)
+    return jsonify({"sensors": summary_df.to_dict(orient="records")})
+
+
+@app.route("/api/beta/standalone_sensor/<sensor>", methods=["GET"])
+def beta_standalone_sensor(sensor):
+    """Return per-sensor timeseries from standalone_scores for a single sensor."""
+    downsample = request.args.get("downsample", default=1, type=int)
+
+    scores_df = standalone_load("standalone_scores.csv")
+    alarms_df = standalone_load("standalone_alarms.csv")
+
+    empty = {"sensor": sensor, "timeseries": [], "downtime_bands": [], "alarm_bands": []}
+    if scores_df.empty:
+        return jsonify(empty)
+
+    # Build per-sensor columns
+    evidence_col = f"{sensor}__Evidence"
+    threshold_col = f"{sensor}__Threshold"
+    level_col = f"{sensor}__Score_Level"
+    sigma_col = f"{sensor}__Baseline_Sigma"
+    sqs_col = f"{sensor}__SQS"
+    enga_col = f"{sensor}__Engine_A"
+    engb_col = f"{sensor}__Engine_B"
+    trust_col = f"{sensor}__Trust"
+
+    needed = [evidence_col, sqs_col, enga_col, engb_col]
+    if not any(c in scores_df.columns for c in needed):
+        return jsonify(empty)
+
+    combined = pd.DataFrame()
+    ts_col = "timestamp_utc"
+    if ts_col in scores_df.columns:
+        combined["ts"] = scores_df[ts_col].astype(str).values
+    if "downtime_flag" in scores_df.columns:
+        combined["downtime"] = scores_df["downtime_flag"].fillna(0).astype(int).values
+
+    for out_key, src_col in [
+        ("evidence", evidence_col), ("threshold", threshold_col),
+        ("sqs", sqs_col), ("engine_a", enga_col), ("engine_b", engb_col),
+        ("trust", trust_col), ("baseline_sigma", sigma_col),
+    ]:
+        if src_col in scores_df.columns:
+            combined[out_key] = pd.to_numeric(scores_df[src_col], errors="coerce").values
+
+    if level_col in scores_df.columns:
+        combined["score_level"] = scores_df[level_col].values
+
+    if downsample > 1:
+        combined = combined.iloc[::downsample]
+
+    # Downtime bands
+    downtime_bands = []
+    if "downtime" in combined.columns:
+        dt_mask = combined["downtime"] == 1
+        if dt_mask.any() and "ts" in combined.columns:
+            dt_times = safe_to_datetime(combined.loc[dt_mask, "ts"], errors="coerce")
+            dt_times = dt_times.sort_values().reset_index(drop=True)
+            merge_gap = pd.Timedelta(minutes=15)
+            span_start = dt_times.iloc[0]
+            span_end = dt_times.iloc[0]
+            for t in dt_times.iloc[1:]:
+                if t - span_end <= merge_gap:
+                    span_end = t
+                else:
+                    downtime_bands.append({"start": str(span_start), "end": str(span_end)})
+                    span_start = t
+                    span_end = t
+            downtime_bands.append({"start": str(span_start), "end": str(span_end)})
+
+    # Alarm bands from standalone_alarms
+    alarm_bands = []
+    alarm_col = f"{sensor}__Alarm"
+    level_at_alarm_col = f"{sensor}__Score_Level_At_Alarm"
+    if not alarms_df.empty and alarm_col in alarms_df.columns and ts_col in alarms_df.columns:
+        a_mask = alarms_df[alarm_col] == 1
+        if a_mask.any():
+            alarm_rows = alarms_df.loc[a_mask].copy()
+            alarm_rows["_ts"] = safe_to_datetime(alarm_rows[ts_col], errors="coerce")
+            alarm_rows = alarm_rows.sort_values("_ts").reset_index(drop=True)
+            # Merge contiguous alarm minutes into spans
+            severity_col_exists = level_at_alarm_col in alarm_rows.columns
+            merge_gap = pd.Timedelta(minutes=5)
+            span_start = alarm_rows["_ts"].iloc[0]
+            span_end = alarm_rows["_ts"].iloc[0]
+            severities = [alarm_rows[level_at_alarm_col].iloc[0]] if severity_col_exists else ["Medium"]
+            for j in range(1, len(alarm_rows)):
+                t = alarm_rows["_ts"].iloc[j]
+                sev = alarm_rows[level_at_alarm_col].iloc[j] if severity_col_exists else "Medium"
+                if t - span_end <= merge_gap:
+                    span_end = t
+                    severities.append(sev)
+                else:
+                    sev_counts = pd.Series(severities).str.upper().value_counts()
+                    top_sev = sev_counts.index[0] if len(sev_counts) else "MEDIUM"
+                    high_c = int(sev_counts.get("HIGH", 0))
+                    med_c = int(sev_counts.get("MEDIUM", 0))
+                    low_c = int(sev_counts.get("LOW", 0))
+                    mixed = len(sev_counts) > 1
+                    alarm_bands.append({
+                        "start": str(span_start), "end": str(span_end),
+                        "severity": "MIXED" if mixed else top_sev,
+                        "minute_count": len(severities),
+                        "high_count": high_c, "medium_count": med_c, "low_count": low_c,
+                        "severity_mix": ", ".join(f"{int(v)} {k.lower()}" for k, v in sev_counts.items()),
+                        "view_type": "span",
+                    })
+                    span_start = t
+                    span_end = t
+                    severities = [sev]
+            sev_counts = pd.Series(severities).str.upper().value_counts()
+            top_sev = sev_counts.index[0] if len(sev_counts) else "MEDIUM"
+            high_c = int(sev_counts.get("HIGH", 0))
+            med_c = int(sev_counts.get("MEDIUM", 0))
+            low_c = int(sev_counts.get("LOW", 0))
+            mixed = len(sev_counts) > 1
+            alarm_bands.append({
+                "start": str(span_start), "end": str(span_end),
+                "severity": "MIXED" if mixed else top_sev,
+                "minute_count": len(severities),
+                "high_count": high_c, "medium_count": med_c, "low_count": low_c,
+                "severity_mix": ", ".join(f"{int(v)} {k.lower()}" for k, v in sev_counts.items()),
+                "view_type": "span",
+            })
+
+    combined = sanitize_df(combined)
+    return jsonify({
+        "sensor": sensor,
+        "timeseries": combined.to_dict(orient="records"),
+        "downtime_bands": downtime_bands,
+        "alarm_bands": alarm_bands,
+    })
+
+
+@app.route("/api/beta/standalone_alarm_detail/<sensor>", methods=["GET"])
+def beta_standalone_alarm_detail(sensor):
+    """Return minute-by-minute alarm rows for a standalone sensor within a time range."""
+    start_ts = request.args.get("start_ts")
+    end_ts = request.args.get("end_ts")
+    if not start_ts or not end_ts:
+        return jsonify({"minute_rows": []})
+
+    alarms_df = standalone_load("standalone_alarms.csv")
+    scores_df = standalone_load("standalone_scores.csv")
+    ts_col = "timestamp_utc"
+
+    alarm_col = f"{sensor}__Alarm"
+    level_col = f"{sensor}__Score_Level_At_Alarm"
+    evidence_col = f"{sensor}__Evidence"
+    sqs_col = f"{sensor}__SQS"
+    trust_col = f"{sensor}__Trust"
+
+    if alarms_df.empty or alarm_col not in alarms_df.columns or ts_col not in alarms_df.columns:
+        return jsonify({"minute_rows": []})
+
+    # Filter to alarm=1 rows within time range
+    df = alarms_df[[ts_col, alarm_col] + [c for c in [level_col] if c in alarms_df.columns]].copy()
+    df = df[df[alarm_col] == 1]
+    if df.empty:
+        return jsonify({"minute_rows": []})
+
+    df["_ts"] = safe_to_datetime(df[ts_col], errors="coerce")
+    start_dt = safe_to_datetime(start_ts, utc=True)
+    end_dt = safe_to_datetime(end_ts, utc=True)
+    df = df[(df["_ts"] >= start_dt) & (df["_ts"] <= end_dt)]
+    if df.empty:
+        return jsonify({"minute_rows": []})
+
+    # Enrich with score data if available
+    if not scores_df.empty and ts_col in scores_df.columns:
+        score_cols = [ts_col] + [c for c in [evidence_col, sqs_col, trust_col] if c in scores_df.columns]
+        score_sub = scores_df[score_cols].copy()
+        score_sub[ts_col] = score_sub[ts_col].astype(str)
+        df[ts_col] = df[ts_col].astype(str)
+        df = df.merge(score_sub, on=ts_col, how="left")
+
+    rows = []
+    for _, row in df.iterrows():
+        severity = str(row.get(level_col, "Medium")).upper() if level_col in df.columns else "MEDIUM"
+        r = {
+            "timestamp_utc": str(row[ts_col]),
+            "severity": severity,
+            "sensor": sensor,
+        }
+        if evidence_col in df.columns:
+            r["evidence"] = float(row[evidence_col]) if pd.notna(row.get(evidence_col)) else None
+        if sqs_col in df.columns:
+            r["sqs"] = float(row[sqs_col]) if pd.notna(row.get(sqs_col)) else None
+        if trust_col in df.columns:
+            r["trust"] = float(row[trust_col]) if pd.notna(row.get(trust_col)) else None
+        rows.append(r)
+
+    return jsonify({"minute_rows": rows})
+
+
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_frontend(path):

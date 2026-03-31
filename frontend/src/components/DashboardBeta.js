@@ -5,6 +5,7 @@ import BetaAlertDetailModal from './BetaAlertDetailModal';
 import SensorQualityGrid from './SensorQualityGrid';
 import SubsystemBehaviorChartBeta from './SubsystemBehaviorChartBeta';
 import SensorValidationReport from './SensorValidationReport';
+import StandaloneSensorChart from './StandaloneSensorChart';
 import FeedbackWidget from './FeedbackWidget';
 import useTimeFilter from '../hooks/useTimeFilter';
 import {
@@ -251,6 +252,28 @@ function DashboardBeta({ user, onLogout }) {
                   isZoomed={!!preZoomState}
                   onSelectAlert={setSelectedAlert}
                   subsystems={activeSubsystems}
+                  hasData={hasData}
+                  statusByDay={statusByDay}
+                />
+                </LazySection>
+              </div>
+
+              {/* Standalone Sensor Analysis */}
+              <div style={styles.sectionDivider} />
+              <div style={styles.sectionWrap}>
+                <LazySection height="400px">
+                <StandaloneSensorChart
+                  selectedDay={timeFilter.selectedDay}
+                  isLatestMode={timeFilter.isLatestMode}
+                  lastNHours={timeFilter.lastNHours}
+                  startTime={timeFilter.startTime}
+                  endTime={timeFilter.endTime}
+                  allDaysMode={timeFilter.allDaysMode}
+                  onScrollDayChange={handleScrollDayChange}
+                  onZoomChange={handleChartZoom}
+                  onZoomReset={handleZoomReset}
+                  isZoomed={!!preZoomState}
+                  onSelectAlert={setSelectedAlert}
                   hasData={hasData}
                   statusByDay={statusByDay}
                 />

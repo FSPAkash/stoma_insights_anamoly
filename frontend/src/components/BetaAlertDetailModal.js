@@ -4,6 +4,7 @@ import {
   getBetaAlertsSensorLevel,
   getBetaAlerts,
   getBetaRiskDecompositionForEpisode,
+  getBetaStandaloneAlarmDetail,
 } from '../utils/api';
 import {
   formatDuration,
@@ -196,11 +197,34 @@ function BetaAlertDetailModal({ alert, onClose }) {
   const [sensorAlerts, setSensorAlerts] = useState([]);
   const [minuteAlerts, setMinuteAlerts] = useState([]);
   const [flowData, setFlowData] = useState(null);
+  const [standaloneMinutes, setStandaloneMinutes] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  const isStandalone = !!(alert && alert.is_standalone);
 
   useEffect(() => {
     if (!alert) return;
     setLoading(true);
+
+    if (alert.is_standalone) {
+      // Standalone sensor: fetch minute-by-minute alarm detail
+      getBetaStandaloneAlarmDetail(alert.class, alert.start_ts, alert.end_ts)
+        .then((res) => {
+          setStandaloneMinutes(res.data.minute_rows || []);
+          setSensorAlerts([]);
+          setMinuteAlerts([]);
+          setFlowData({});
+        })
+        .catch(() => {
+          setStandaloneMinutes([]);
+          setSensorAlerts([]);
+          setMinuteAlerts([]);
+          setFlowData({});
+        })
+        .finally(() => setLoading(false));
+      return;
+    }
+
     Promise.allSettled([
       getBetaAlertsSensorLevel({
         start_ts: alert.start_ts,
@@ -230,6 +254,7 @@ function BetaAlertDetailModal({ alert, onClose }) {
         } else {
           setFlowData({});
         }
+        setStandaloneMinutes([]);
       })
       .finally(() => setLoading(false));
   }, [alert]);
@@ -303,8 +328,12 @@ function BetaAlertDetailModal({ alert, onClose }) {
           <div style={styles.header}>
             <div style={styles.titleArea}>
               <div style={styles.title}>
-                {currentView === 'span' ? 'System Anomaly Span Detail' : 'System Anomaly Detail'}
-                <InfoTooltip text={currentView === 'span'
+                {isStandalone
+                  ? 'Sensor Anomaly Span Detail'
+                  : currentView === 'span' ? 'System Anomaly Span Detail' : 'System Anomaly Detail'}
+                <InfoTooltip text={isStandalone
+                  ? 'This detail view shows the minute-by-minute alarm rows for the selected standalone sensor anomaly span, including severity and score values at each alarm minute.'
+                  : currentView === 'span'
                   ? 'This detail view summarizes the selected dynamic anomaly span, including how many minute-level anomalies it contains, the severity mix inside the span, and the aggregated sensor contributions across that span.'
                   : 'This detail view summarizes the selected system anomaly row. Risk values are subsystem-level scores for that minute, while sensor contribution values show relative sensor influence and do not sum to the risk score.'} />
               </div>
@@ -369,14 +398,16 @@ function BetaAlertDetailModal({ alert, onClose }) {
               </div>
               {currentView === 'span' && (
                 <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
-                  <div style={styles.metaLabel}>Alerts</div>
-                  <div style={styles.metaValue}>{minuteRowsInSpan.length}</div>
+                  <div style={styles.metaLabel}>Alarm Minutes</div>
+                  <div style={styles.metaValue}>{isStandalone ? standaloneMinutes.length : minuteRowsInSpan.length}</div>
                 </div>
               )}
-              <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
-                <div style={styles.metaLabel}>Sensors</div>
-                <div style={styles.metaValue}>{alert.affected_sensor_count}</div>
-              </div>
+              {!isStandalone && (
+                <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
+                  <div style={styles.metaLabel}>Sensors</div>
+                  <div style={styles.metaValue}>{alert.affected_sensor_count}</div>
+                </div>
+              )}
               {currentView === 'span' && severityMixLabel && (
                 <div style={{ ...styles.metaItem, flex: '1 1 0', minWidth: 0, textAlign: 'center' }}>
                   <div style={styles.metaLabel}>Severity Mix</div>
@@ -458,7 +489,58 @@ function BetaAlertDetailModal({ alert, onClose }) {
           })()}
 
           {loading ? (
-            <div style={styles.loading}>Loading system anomaly details...</div>
+            <div style={styles.loading}>{isStandalone ? 'Loading sensor anomaly details...' : 'Loading system anomaly details...'}</div>
+          ) : isStandalone ? (
+            <>
+              <div style={styles.sectionTitle}>
+                Minute-by-Minute Alarm Rows ({standaloneMinutes.length})
+                <InfoTooltip text="Each row is a minute where this sensor was in alarm state within the selected span. Severity and score values reflect the standalone analysis pipeline output at that minute." />
+              </div>
+              {standaloneMinutes.length === 0 ? (
+                <div style={styles.loading}>No minute-level alarm rows were returned for this span.</div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={styles.sensorTable}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>Timestamp (UTC)</th>
+                        <th style={styles.th}>Severity</th>
+                        <th style={styles.th}>Evidence</th>
+                        <th style={styles.th}>SQS</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {standaloneMinutes.map((row, idx) => {
+                        const rowSeverity = String(row.severity || 'LOW').toUpperCase();
+                        return (
+                          <motion.tr
+                            key={`${row.timestamp_utc}-${idx}`}
+                            style={styles.sensorRow}
+                            whileHover={{ background: 'rgba(168, 220, 168, 0.15)' }}
+                          >
+                            <td style={styles.td}>{formatTimestamp(row.timestamp_utc)}</td>
+                            <td style={styles.td}>
+                              <span style={{
+                                padding: '2px 8px',
+                                borderRadius: '10px',
+                                fontSize: '10px',
+                                fontWeight: 600,
+                                background: rowSeverity === 'HIGH' ? '#FFCDD2' : rowSeverity === 'MEDIUM' ? '#FFE0B2' : '#FFF8E1',
+                                color: rowSeverity === 'HIGH' ? '#C62828' : rowSeverity === 'MEDIUM' ? '#E65100' : '#9A6A00',
+                              }}>
+                                {rowSeverity}
+                              </span>
+                            </td>
+                            <td style={styles.td}>{row.evidence != null ? formatScore(row.evidence) : '--'}</td>
+                            <td style={styles.td}>{row.sqs != null ? formatScore(row.sqs) : '--'}</td>
+                          </motion.tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
           ) : (
             <>
               {hasDecomposition && (
