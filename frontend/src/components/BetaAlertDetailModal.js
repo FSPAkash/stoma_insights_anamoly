@@ -361,11 +361,11 @@ function BetaAlertDetailModal({ alert, onClose }) {
             <GaugeWidget
               value={isSpanView ? alert.peak_risk_score : alert.risk_score}
               max={Math.max((isSpanView ? alert.peak_risk_score : alert.risk_score) || 0.01, alert.adaptive_threshold || 0.01) * 1.2}
-              label={isSpanView ? 'Peak Risk Score' : 'Risk Score'}
+              label={isStandalone ? 'Peak Risk Score' : isSpanView ? 'Peak Risk Score' : 'Risk Score'}
               color={alert.severity === 'HIGH' ? '#EF5350' : alert.severity === 'MEDIUM' ? '#FFA726' : '#4CAF50'}
               size={130}
               sublabel={alert.adaptive_threshold != null ? `Threshold: ${Number(alert.adaptive_threshold).toFixed(3)}` : undefined}
-              tooltip="Normalized risk score (0-1) used by the anomaly system. The anomaly fires when this exceeds the adaptive threshold."
+              tooltip={isStandalone ? 'Peak sensor risk score (0-1) during the alarm span.' : 'Normalized risk score (0-1) used by the anomaly system. The anomaly fires when this exceeds the adaptive threshold.'}
             />
 
             {/* Stats grid below gauge */}
@@ -505,7 +505,7 @@ function BetaAlertDetailModal({ alert, onClose }) {
                       <tr>
                         <th style={styles.th}>Timestamp (UTC)</th>
                         <th style={styles.th}>Severity</th>
-                        <th style={styles.th}>Evidence</th>
+                        <th style={styles.th}>Risk Score</th>
                         <th style={styles.th}>SQS</th>
                       </tr>
                     </thead>

@@ -2590,56 +2590,66 @@ def beta_standalone_sensor(sensor):
     alarm_bands = []
     alarm_col = f"{sensor}__Alarm"
     level_at_alarm_col = f"{sensor}__Score_Level_At_Alarm"
+
+    # Build trust and evidence lookups from scores_df (ts -> value) for per-span stats
+    trust_lookup = {}
+    evidence_lookup = {}
+    if not scores_df.empty and ts_col in scores_df.columns:
+        if trust_col in scores_df.columns:
+            trust_series = pd.to_numeric(scores_df[trust_col], errors="coerce")
+            trust_lookup = dict(zip(scores_df[ts_col].astype(str), trust_series))
+        if evidence_col in scores_df.columns:
+            ev_series = pd.to_numeric(scores_df[evidence_col], errors="coerce")
+            evidence_lookup = dict(zip(scores_df[ts_col].astype(str), ev_series))
+
+    def _build_band(span_start, span_end, severities, span_ts_list):
+        sev_counts = pd.Series(severities).str.upper().value_counts()
+        top_sev = sev_counts.index[0] if len(sev_counts) else "MEDIUM"
+        high_c = int(sev_counts.get("HIGH", 0))
+        med_c = int(sev_counts.get("MEDIUM", 0))
+        low_c = int(sev_counts.get("LOW", 0))
+        mixed = len(sev_counts) > 1
+        trust_vals = [trust_lookup.get(str(t)) for t in span_ts_list if trust_lookup.get(str(t)) is not None]
+        mean_trust = float(sum(trust_vals) / len(trust_vals)) if trust_vals else None
+        ev_vals = [evidence_lookup.get(str(t)) for t in span_ts_list if evidence_lookup.get(str(t)) is not None]
+        peak_evidence = float(max(ev_vals)) if ev_vals else None
+        return {
+            "start": str(span_start), "end": str(span_end),
+            "severity": "MIXED" if mixed else top_sev,
+            "minute_count": len(severities),
+            "high_count": high_c, "medium_count": med_c, "low_count": low_c,
+            "severity_mix": ", ".join(f"{int(v)} {k.lower()}" for k, v in sev_counts.items()),
+            "view_type": "span",
+            "mean_trust": round(mean_trust, 4) if mean_trust is not None else None,
+            "peak_evidence": round(peak_evidence, 4) if peak_evidence is not None else None,
+        }
+
     if not alarms_df.empty and alarm_col in alarms_df.columns and ts_col in alarms_df.columns:
         a_mask = alarms_df[alarm_col] == 1
         if a_mask.any():
             alarm_rows = alarms_df.loc[a_mask].copy()
             alarm_rows["_ts"] = safe_to_datetime(alarm_rows[ts_col], errors="coerce")
             alarm_rows = alarm_rows.sort_values("_ts").reset_index(drop=True)
-            # Merge contiguous alarm minutes into spans
             severity_col_exists = level_at_alarm_col in alarm_rows.columns
             merge_gap = pd.Timedelta(minutes=5)
             span_start = alarm_rows["_ts"].iloc[0]
             span_end = alarm_rows["_ts"].iloc[0]
             severities = [alarm_rows[level_at_alarm_col].iloc[0]] if severity_col_exists else ["Medium"]
+            span_ts_list = [alarm_rows[ts_col].iloc[0]]
             for j in range(1, len(alarm_rows)):
                 t = alarm_rows["_ts"].iloc[j]
                 sev = alarm_rows[level_at_alarm_col].iloc[j] if severity_col_exists else "Medium"
                 if t - span_end <= merge_gap:
                     span_end = t
                     severities.append(sev)
+                    span_ts_list.append(alarm_rows[ts_col].iloc[j])
                 else:
-                    sev_counts = pd.Series(severities).str.upper().value_counts()
-                    top_sev = sev_counts.index[0] if len(sev_counts) else "MEDIUM"
-                    high_c = int(sev_counts.get("HIGH", 0))
-                    med_c = int(sev_counts.get("MEDIUM", 0))
-                    low_c = int(sev_counts.get("LOW", 0))
-                    mixed = len(sev_counts) > 1
-                    alarm_bands.append({
-                        "start": str(span_start), "end": str(span_end),
-                        "severity": "MIXED" if mixed else top_sev,
-                        "minute_count": len(severities),
-                        "high_count": high_c, "medium_count": med_c, "low_count": low_c,
-                        "severity_mix": ", ".join(f"{int(v)} {k.lower()}" for k, v in sev_counts.items()),
-                        "view_type": "span",
-                    })
+                    alarm_bands.append(_build_band(span_start, span_end, severities, span_ts_list))
                     span_start = t
                     span_end = t
                     severities = [sev]
-            sev_counts = pd.Series(severities).str.upper().value_counts()
-            top_sev = sev_counts.index[0] if len(sev_counts) else "MEDIUM"
-            high_c = int(sev_counts.get("HIGH", 0))
-            med_c = int(sev_counts.get("MEDIUM", 0))
-            low_c = int(sev_counts.get("LOW", 0))
-            mixed = len(sev_counts) > 1
-            alarm_bands.append({
-                "start": str(span_start), "end": str(span_end),
-                "severity": "MIXED" if mixed else top_sev,
-                "minute_count": len(severities),
-                "high_count": high_c, "medium_count": med_c, "low_count": low_c,
-                "severity_mix": ", ".join(f"{int(v)} {k.lower()}" for k, v in sev_counts.items()),
-                "view_type": "span",
-            })
+                    span_ts_list = [alarm_rows[ts_col].iloc[j]]
+            alarm_bands.append(_build_band(span_start, span_end, severities, span_ts_list))
 
     combined = sanitize_df(combined)
     return jsonify({
@@ -2693,19 +2703,26 @@ def beta_standalone_alarm_detail(sensor):
         df = df.merge(score_sub, on=ts_col, how="left")
 
     rows = []
+    has_level = level_col in df.columns
+    has_evidence = evidence_col in df.columns
+    has_sqs = sqs_col in df.columns
+    has_trust = trust_col in df.columns
     for _, row in df.iterrows():
-        severity = str(row.get(level_col, "Medium")).upper() if level_col in df.columns else "MEDIUM"
+        severity = str(row[level_col]).upper() if has_level else "MEDIUM"
         r = {
             "timestamp_utc": str(row[ts_col]),
             "severity": severity,
             "sensor": sensor,
         }
-        if evidence_col in df.columns:
-            r["evidence"] = float(row[evidence_col]) if pd.notna(row.get(evidence_col)) else None
-        if sqs_col in df.columns:
-            r["sqs"] = float(row[sqs_col]) if pd.notna(row.get(sqs_col)) else None
-        if trust_col in df.columns:
-            r["trust"] = float(row[trust_col]) if pd.notna(row.get(trust_col)) else None
+        if has_evidence:
+            v = pd.to_numeric(row[evidence_col], errors="coerce")
+            r["evidence"] = float(v) if pd.notna(v) else None
+        if has_sqs:
+            v = pd.to_numeric(row[sqs_col], errors="coerce")
+            r["sqs"] = float(v) if pd.notna(v) else None
+        if has_trust:
+            v = pd.to_numeric(row[trust_col], errors="coerce")
+            r["trust"] = float(v) if pd.notna(v) else None
         rows.append(r)
 
     return jsonify({"minute_rows": rows})

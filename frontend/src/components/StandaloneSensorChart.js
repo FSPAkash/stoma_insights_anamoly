@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   ResponsiveContainer,
   Line,
@@ -309,7 +309,7 @@ function StandaloneSensorChart({ selectedDay, isLatestMode, lastNHours, startTim
           severity: b.severity || 'MEDIUM', minute_count: b.minute_count || 1,
           high_count: b.high_count || 0, medium_count: b.medium_count || 0, low_count: b.low_count || 0,
           severity_mix: b.severity_mix || '', view_type: b.view_type || 'span',
-          rawStart: b.start, rawEnd: b.end,
+          rawStart: b.start, rawEnd: b.end, mean_trust: b.mean_trust ?? null, peak_evidence: b.peak_evidence ?? null,
         };
         if (band.start === band.end) return { ...band, start: band.start - 0.45, end: band.end + 0.45 };
         return band;
@@ -472,6 +472,8 @@ function StandaloneSensorChart({ selectedDay, isLatestMode, lastNHours, startTim
     severity_mix: band.severity_mix || '',
     view_type: band.view_type || 'span',
     duration_minutes: band.minute_count,
+    system_confidence: band.mean_trust ?? null,
+    peak_risk_score: band.peak_evidence ?? null,
     is_standalone: true,
   }), [selectedSensor]);
 
