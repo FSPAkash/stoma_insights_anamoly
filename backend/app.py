@@ -64,6 +64,7 @@ _beta_csv_cache = {}
 _beta_csv_ts_cache = {}
 _beta_csv_mtime = {}  # track file modification times for cache invalidation
 _beta_alert_tables_cache = {}
+_beta_fingerprint_cache = {}
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "")  # e.g. "username/repo"
@@ -894,6 +895,78 @@ def _beta_resolve_path(filename):
     return None
 
 
+def _standalone_resolve_path(filename):
+    """Return the actual file path inside standalone_outputs (parquet preferred)."""
+    if filename.endswith(".csv"):
+        pq = os.path.join(STANDALONE_DATA_DIR, filename.rsplit(".", 1)[0] + ".parquet")
+        if os.path.exists(pq):
+            return pq
+    csv = os.path.join(STANDALONE_DATA_DIR, filename)
+    if os.path.exists(csv):
+        return csv
+    return None
+
+
+def _read_available_columns(path):
+    if not path:
+        return []
+    try:
+        if path.endswith(".parquet"):
+            try:
+                import pyarrow.parquet as pq
+                return pq.ParquetFile(path).schema.names
+            except Exception:
+                df_head = pd.read_parquet(path)
+                return list(df_head.columns)
+        return list(pd.read_csv(path, nrows=0).columns)
+    except Exception:
+        return []
+
+
+def _read_projected_frame(path, columns=None):
+    if not path:
+        return pd.DataFrame()
+    try:
+        if path.endswith(".parquet"):
+            df = pd.read_parquet(path, columns=columns if columns else None)
+        else:
+            if columns:
+                wanted = set(columns)
+                df = pd.read_csv(path, usecols=lambda c: c in wanted)
+            else:
+                df = pd.read_csv(path)
+        if df.index.name and df.index.name not in df.columns:
+            df = df.reset_index()
+        return df
+    except Exception as e:
+        print(f"Error reading projected frame from {path}: {e}")
+        return pd.DataFrame()
+
+
+def beta_read_columns(filename, columns):
+    path = _beta_resolve_path(filename)
+    if path is None:
+        return pd.DataFrame()
+    if columns:
+        available = set(_read_available_columns(path))
+        columns = [c for c in columns if c in available]
+        if not columns:
+            return pd.DataFrame()
+    return _read_projected_frame(path, columns)
+
+
+def standalone_read_columns(filename, columns):
+    path = _standalone_resolve_path(filename)
+    if path is None:
+        return pd.DataFrame()
+    if columns:
+        available = set(_read_available_columns(path))
+        columns = [c for c in columns if c in available]
+        if not columns:
+            return pd.DataFrame()
+    return _read_projected_frame(path, columns)
+
+
 def _beta_cache_is_stale(filename):
     """Check if the cached file has been modified on disk."""
     path = _beta_resolve_path(filename)
@@ -1027,15 +1100,60 @@ def _beta_build_timestamp_alert_tables():
     ]
 
     alarms_df, alarms_ts = beta_load_csv_with_ts("detailed_subsystem_alarms.csv")
-    rankings_df, rankings_ts = beta_load_csv_with_ts("detailed_sensor_rankings.csv")
-    scores_df, scores_ts = beta_load_csv_with_ts("detailed_system_sensor_scores.csv")
-    trust_df, trust_ts = beta_load_csv_with_ts("detailed_sensor_trust.csv")
 
     if alarms_df.empty or not alarms_ts or alarms_ts not in alarms_df.columns:
         return pd.DataFrame(columns=alert_cols), pd.DataFrame(columns=sensor_cols)
 
     alarms_df = alarms_df.copy()
     alarms_df[alarms_ts] = alarms_df[alarms_ts].astype(str)
+    alarm_cols = sorted([col for col in alarms_df.columns if col.endswith("__Alarm") and col != "downtime_flag"])
+    system_labels = [col.replace("__Alarm", "") for col in alarm_cols]
+
+    rankings_path = _beta_resolve_path("detailed_sensor_rankings.csv")
+    scores_path = _beta_resolve_path("detailed_system_sensor_scores.csv")
+    trust_path = _beta_resolve_path("detailed_sensor_trust.csv")
+
+    ranking_available = set(_read_available_columns(rankings_path)) if rankings_path else set()
+    scores_available = set(_read_available_columns(scores_path)) if scores_path else set()
+    trust_available = set(_read_available_columns(trust_path)) if trust_path else set()
+
+    rankings_ts = "timestamp_utc" if "timestamp_utc" in ranking_available else None
+    scores_ts = "timestamp_utc" if "timestamp_utc" in scores_available else None
+    trust_ts = "timestamp_utc" if "timestamp_utc" in trust_available else None
+
+    ranking_cols = [rankings_ts] if rankings_ts else []
+    score_cols = [scores_ts] if scores_ts else []
+    trust_cols = [trust_ts] if trust_ts else []
+
+    for sys_label in system_labels:
+        prefix = f"{sys_label}__"
+        score_cols.extend([
+            f"{prefix}System_Score",
+            f"{prefix}Adaptive_Threshold",
+            f"{prefix}System_Confidence",
+        ])
+        score_cols.extend([
+            col for col in scores_available
+            if col.startswith(prefix) and col.endswith("__SQS")
+        ])
+        ranking_cols.extend([
+            col for col in ranking_available
+            if col.startswith(prefix) and col.endswith("__Contribution")
+        ])
+        for rank in range(1, 6):
+            ranking_cols.extend([
+                f"{sys_label}___Rank_{rank}_Sensor",
+                f"{sys_label}___Rank_{rank}_Score",
+                f"{sys_label}___Rank_{rank}_Pct",
+            ])
+        trust_cols.extend([
+            col for col in trust_available
+            if col.startswith(prefix)
+        ])
+
+    rankings_df = beta_read_columns("detailed_sensor_rankings.csv", ranking_cols) if ranking_cols else pd.DataFrame()
+    scores_df = beta_read_columns("detailed_system_sensor_scores.csv", score_cols) if score_cols else pd.DataFrame()
+    trust_df = beta_read_columns("detailed_sensor_trust.csv", trust_cols) if trust_cols else pd.DataFrame()
 
     rankings_indexed = pd.DataFrame()
     if not rankings_df.empty and rankings_ts and rankings_ts in rankings_df.columns:
@@ -1057,7 +1175,6 @@ def _beta_build_timestamp_alert_tables():
 
     alerts_rows = []
     sensor_rows = []
-    alarm_cols = sorted([col for col in alarms_df.columns if col.endswith("__Alarm") and col != "downtime_flag"])
 
     for alarm_col in alarm_cols:
         sys_label = alarm_col.replace("__Alarm", "")
@@ -1508,6 +1625,26 @@ def _beta_build_alert_tables_for_view(alarm_view):
     return alerts_df, sensors_df
 
 
+def _beta_fingerprint_cache_dependencies():
+    return [
+        "detailed_system_sensor_scores.csv",
+        "dynamic_catalog.csv",
+        "subsystem_summary.csv",
+        "system_summary.csv",
+    ]
+
+
+def _beta_fingerprint_cache_stale(cached_entry):
+    dep_mtimes = (cached_entry or {}).get("dep_mtimes", {})
+    if not dep_mtimes:
+        return True
+    for dep, cached_mtime in dep_mtimes.items():
+        path = _beta_resolve_path(dep)
+        if path is None or os.path.getmtime(path) != cached_mtime:
+            return True
+    return False
+
+
 def maybe_preload_beta_data():
     """
     Optional warmup for local/dev use.
@@ -1953,13 +2090,17 @@ def beta_sensor_contributions(system_id):
     """Return per-sensor AE contribution time series for a subsystem, normalized to stack to system score."""
     downsample = request.args.get("downsample", default=1, type=int)
 
-    df, ts_col = beta_load_csv_with_ts("detailed_system_sensor_scores.csv")
-    if df.empty or not ts_col:
+    source_path = _beta_resolve_path("detailed_system_sensor_scores.csv")
+    if not source_path:
         return jsonify({"sensors": [], "timeseries": [], "timestamp_col": "ts"})
 
-    # Find contribution columns for this system: {system_id}__{sensor}__AE_Contribution
+    available_cols = _read_available_columns(source_path)
+    if not available_cols:
+        return jsonify({"sensors": [], "timeseries": [], "timestamp_col": "ts"})
+
+    ts_col = "timestamp_utc" if "timestamp_utc" in available_cols else find_timestamp_col(pd.DataFrame(columns=available_cols))
     prefix = f"{system_id}__"
-    contrib_cols = [c for c in df.columns if c.startswith(prefix) and c.endswith("__AE_Contribution")]
+    contrib_cols = [c for c in available_cols if c.startswith(prefix) and c.endswith("__AE_Contribution")]
     if not contrib_cols:
         return jsonify({"sensors": [], "timeseries": [], "timestamp_col": "ts"})
 
@@ -1968,6 +2109,11 @@ def beta_sensor_contributions(system_id):
 
     # System score column
     score_col = f"{system_id}__System_Score"
+    columns_to_read = [c for c in [ts_col, score_col] + contrib_cols if c]
+    df = beta_read_columns("detailed_system_sensor_scores.csv", columns_to_read)
+    if df.empty or not ts_col or ts_col not in df.columns:
+        return jsonify({"sensors": [], "timeseries": [], "timestamp_col": "ts"})
+
     has_score = score_col in df.columns
 
     # Build output
@@ -2202,10 +2348,55 @@ def beta_radar_fingerprints():
     and returns mean AE_Contribution per sensor during that window.
     Also enriches with subsystem_summary.csv and system_summary.csv stats.
     """
-    scores_df, scores_ts = beta_load_csv_with_ts("detailed_system_sensor_scores.csv")
-    catalog_df = beta_load_csv("dynamic_catalog.csv")
+    cached = _beta_fingerprint_cache.get("payload")
+    if cached and not _beta_fingerprint_cache_stale(cached):
+        return jsonify({"fingerprints": cached["fingerprints"]})
 
-    if scores_df.empty or catalog_df.empty:
+    catalog_df = beta_load_csv("dynamic_catalog.csv")
+    if catalog_df.empty:
+        return jsonify({"fingerprints": []})
+
+    grouped = catalog_df.groupby("system")["sensor"].apply(list).to_dict()
+
+    source_path = _beta_resolve_path("detailed_system_sensor_scores.csv")
+    if not source_path:
+        return jsonify({"fingerprints": []})
+
+    available_cols = set(_read_available_columns(source_path))
+    if not available_cols:
+        return jsonify({"fingerprints": []})
+
+    scores_ts = "timestamp_utc" if "timestamp_utc" in available_cols else None
+    columns_to_read = [scores_ts] if scores_ts else []
+    for sys_label, sensors in grouped.items():
+        if sys_label == "ISOLATED":
+            continue
+        prefix = f"{sys_label}__"
+        columns_to_read.extend([
+            f"{prefix}System_Alarm",
+            f"{prefix}System_Score",
+            f"{prefix}System_Confidence",
+            f"{prefix}Adaptive_Threshold",
+            f"{prefix}Baseline_Sigma",
+        ])
+        for rk in range(1, 6):
+            columns_to_read.extend([
+                f"{prefix}_Rank_{rk}_Sensor",
+                f"{prefix}_Rank_{rk}_Score",
+                f"{prefix}_Rank_{rk}_Pct",
+            ])
+        for sensor in sensors:
+            columns_to_read.extend([
+                f"{prefix}{sensor}__Trust",
+                f"{prefix}{sensor}__SQS",
+                f"{prefix}{sensor}__Sigma_Score",
+                f"{prefix}{sensor}__AE_Contribution",
+            ])
+
+    columns_to_read = [c for c in dict.fromkeys(columns_to_read) if c in available_cols]
+    scores_df = beta_read_columns("detailed_system_sensor_scores.csv", columns_to_read)
+
+    if scores_df.empty:
         return jsonify({"fingerprints": []})
 
     # Load enrichment data
@@ -2222,7 +2413,6 @@ def beta_radar_fingerprints():
         for _, row in sys_summary.iterrows():
             sys_lookup[row["System_ID"]] = row.to_dict()
 
-    grouped = catalog_df.groupby("system")["sensor"].apply(list).to_dict()
     fingerprints = []
 
     for sys_label, sensors in sorted(grouped.items()):
@@ -2407,7 +2597,17 @@ def beta_radar_fingerprints():
             return [_clean(v) for v in obj]
         return obj
 
-    return jsonify({"fingerprints": _clean(fingerprints)})
+    cleaned = _clean(fingerprints)
+    dep_mtimes = {}
+    for dep in _beta_fingerprint_cache_dependencies():
+        path = _beta_resolve_path(dep)
+        if path is not None:
+            dep_mtimes[dep] = os.path.getmtime(path)
+    _beta_fingerprint_cache["payload"] = {
+        "fingerprints": cleaned,
+        "dep_mtimes": dep_mtimes,
+    }
+    return jsonify({"fingerprints": cleaned})
 
 
 @app.route("/api/beta/alerts_sensor_level", methods=["GET"])
@@ -2479,31 +2679,26 @@ _standalone_mtime = {}
 def standalone_load(filename):
     """Load a file from standalone_outputs, preferring parquet. Cached."""
     if filename in _standalone_cache:
-        csv_path = os.path.join(STANDALONE_DATA_DIR, filename)
-        parquet_name = filename.rsplit(".", 1)[0] + ".parquet" if filename.endswith(".csv") else filename
-        parquet_path = os.path.join(STANDALONE_DATA_DIR, parquet_name)
-        check_path = parquet_path if os.path.exists(parquet_path) else csv_path
+        check_path = _standalone_resolve_path(filename)
         try:
             mtime = os.path.getmtime(check_path)
             if _standalone_mtime.get(filename) == mtime:
                 return _standalone_cache[filename]
         except Exception:
             return _standalone_cache[filename]
-    parquet_name = filename.rsplit(".", 1)[0] + ".parquet" if filename.endswith(".csv") else filename
-    parquet_path = os.path.join(STANDALONE_DATA_DIR, parquet_name)
-    csv_path = os.path.join(STANDALONE_DATA_DIR, filename)
+    resolved_path = _standalone_resolve_path(filename)
     try:
-        if os.path.exists(parquet_path):
-            df = pd.read_parquet(parquet_path)
+        if resolved_path and resolved_path.endswith(".parquet") and os.path.exists(resolved_path):
+            df = pd.read_parquet(resolved_path)
             if df.index.name and df.index.name not in df.columns:
                 df = df.reset_index()
             _standalone_cache[filename] = df
-            _standalone_mtime[filename] = os.path.getmtime(parquet_path)
+            _standalone_mtime[filename] = os.path.getmtime(resolved_path)
             return df
-        if os.path.exists(csv_path):
-            df = pd.read_csv(csv_path)
+        if resolved_path and os.path.exists(resolved_path):
+            df = pd.read_csv(resolved_path)
             _standalone_cache[filename] = df
-            _standalone_mtime[filename] = os.path.getmtime(csv_path)
+            _standalone_mtime[filename] = os.path.getmtime(resolved_path)
             return df
     except Exception as e:
         print(f"Error loading standalone {filename}: {e}")
@@ -2525,12 +2720,7 @@ def beta_standalone_sensor(sensor):
     """Return per-sensor timeseries from standalone_scores for a single sensor."""
     downsample = request.args.get("downsample", default=1, type=int)
 
-    scores_df = standalone_load("standalone_scores.csv")
-    alarms_df = standalone_load("standalone_alarms.csv")
-
     empty = {"sensor": sensor, "timeseries": [], "downtime_bands": [], "alarm_bands": []}
-    if scores_df.empty:
-        return jsonify(empty)
 
     # Build per-sensor columns
     evidence_col = f"{sensor}__Evidence"
@@ -2541,13 +2731,25 @@ def beta_standalone_sensor(sensor):
     enga_col = f"{sensor}__Engine_A"
     engb_col = f"{sensor}__Engine_B"
     trust_col = f"{sensor}__Trust"
+    ts_col = "timestamp_utc"
+
+    scores_df = standalone_read_columns(
+        "standalone_scores.csv",
+        [ts_col, "downtime_flag", evidence_col, threshold_col, level_col, sigma_col, sqs_col, enga_col, engb_col, trust_col],
+    )
+    alarms_df = standalone_read_columns(
+        "standalone_alarms.csv",
+        [ts_col, "downtime_flag", f"{sensor}__Alarm", f"{sensor}__Score_Level_At_Alarm"],
+    )
+
+    if scores_df.empty:
+        return jsonify(empty)
 
     needed = [evidence_col, sqs_col, enga_col, engb_col]
     if not any(c in scores_df.columns for c in needed):
         return jsonify(empty)
 
     combined = pd.DataFrame()
-    ts_col = "timestamp_utc"
     if ts_col in scores_df.columns:
         combined["ts"] = scores_df[ts_col].astype(str).values
     if "downtime_flag" in scores_df.columns:
@@ -2668,15 +2870,14 @@ def beta_standalone_alarm_detail(sensor):
     if not start_ts or not end_ts:
         return jsonify({"minute_rows": []})
 
-    alarms_df = standalone_load("standalone_alarms.csv")
-    scores_df = standalone_load("standalone_scores.csv")
     ts_col = "timestamp_utc"
-
     alarm_col = f"{sensor}__Alarm"
     level_col = f"{sensor}__Score_Level_At_Alarm"
     evidence_col = f"{sensor}__Evidence"
     sqs_col = f"{sensor}__SQS"
     trust_col = f"{sensor}__Trust"
+    alarms_df = standalone_read_columns("standalone_alarms.csv", [ts_col, alarm_col, level_col])
+    scores_df = standalone_read_columns("standalone_scores.csv", [ts_col, evidence_col, sqs_col, trust_col])
 
     if alarms_df.empty or alarm_col not in alarms_df.columns or ts_col not in alarms_df.columns:
         return jsonify({"minute_rows": []})

@@ -156,7 +156,6 @@ function StandaloneSensorChart({ selectedDay, isLatestMode, lastNHours, startTim
       .then((res) => {
         const list = res.data.sensors || [];
         setSensors(list);
-        if (list.length > 0 && !selectedSensor) setSelectedSensor(list[0].Sensor);
       })
       .catch(() => setSensors([]))
       .finally(() => setSensorsLoading(false));
