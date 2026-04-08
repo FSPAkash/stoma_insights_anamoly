@@ -80,7 +80,7 @@ class PipelineConfig:
     ae_batch_size: int = 256
     ae_min_sensors: int = 1
     ae_min_training_rows: int = 300
-    ae_missing_max: float = 0.10
+    ae_missing_max: float = 0.99
     ae_mean_abs_corr_min: float = 0.05
     ae_risk_sigma_factor: float = 3.0
     ae_slew_rate: float = 0.0005

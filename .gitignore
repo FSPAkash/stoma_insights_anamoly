@@ -16,6 +16,7 @@ backend/__pycache__/
 # Keep parquet files tracked (needed for deploy/runtime data on Render)
 backend/data/*.xlsx
 backend/*.xlsx
+backend/data_beta.zip
 merged.parquet
 
 # Beta data: ignore bulky CSV outputs when parquet equivalents exist.
